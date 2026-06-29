@@ -46,7 +46,7 @@ lenguaje (`languages add/install/edit`).
 Requiere **Python 3.11+**.
 
 ```bash
-git clone <repo-url> hexflaw && cd hexflaw
+git clone https://github.com/Secure-Hex/HexFlaw.git hexflaw && cd hexflaw
 
 # Runtime base (suficiente para el pipeline completo, con fallbacks locales)
 pip install -e .
