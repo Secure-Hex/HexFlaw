@@ -1,0 +1,71 @@
+"""Caché de análisis por hash de chunk (CLAUDE.md §16, estrategia 3).
+
+Si un chunk ya fue analizado y su SHA-256 no cambió, se reutiliza el resultado
+sin llamar al LLM. La caché se invalida cuando cambia el modelo o el vuln_profile
+activo (forman parte de la clave).
+
+Persiste en ``.hexflaw/cache/analysis_cache.json``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+from hexflaw.infrastructure import storage
+from hexflaw.infrastructure.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+class AnalysisCache:
+    """Caché key-value de findings por chunk, modelo y perfil de vulns."""
+
+    def __init__(self, hexflaw_dir: Path) -> None:
+        """Inicializa la caché anclada al proyecto.
+
+        Args:
+            hexflaw_dir: Directorio ``.hexflaw/`` del proyecto.
+        """
+        self.path = hexflaw_dir / "cache" / "analysis_cache.json"
+        self._data: dict[str, list[dict]] = {}
+        self.hits = 0
+        self._load()
+
+    def _load(self) -> None:
+        if self.path.exists():
+            try:
+                self._data = dict(storage.read_json(self.path))
+            except (ValueError, OSError) as exc:
+                logger.warning("Caché de análisis ilegible (%s); ignorando", exc)
+                self._data = {}
+
+    @staticmethod
+    def make_key(chunk_hash: str, model: str, vuln_profile: list[str]) -> str:
+        """Construye la clave de caché combinando chunk, modelo y perfil.
+
+        Args:
+            chunk_hash: SHA-256 del texto del chunk.
+            model: Modelo usado en el análisis.
+            vuln_profile: Perfil de vulnerabilidades activo.
+
+        Returns:
+            Clave hexadecimal estable.
+        """
+        material = f"{chunk_hash}|{model}|{','.join(sorted(vuln_profile))}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def get(self, key: str) -> list[dict] | None:
+        """Devuelve los findings cacheados para ``key``, o ``None``."""
+        value = self._data.get(key)
+        if value is not None:
+            self.hits += 1
+        return value
+
+    def set(self, key: str, findings: list[dict]) -> None:
+        """Almacena los findings de un chunk bajo ``key`` (en memoria)."""
+        self._data[key] = findings
+
+    def flush(self) -> None:
+        """Persiste la caché a disco con permisos ``600``."""
+        storage.write_json(self.path, self._data)

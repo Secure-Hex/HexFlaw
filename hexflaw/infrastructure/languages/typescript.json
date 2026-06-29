@@ -1,0 +1,40 @@
+{
+  "id": "typescript",
+  "name": "TypeScript",
+  "extensions": [".ts", ".tsx"],
+  "tree_sitter_package": "tree-sitter-typescript",
+  "app_types": ["web"],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "xss",
+    "ssrf",
+    "path_traversal",
+    "deserialization",
+    "prototype_pollution"
+  ],
+  "entry_point_patterns": [
+    "app.get",
+    "app.post",
+    "router.",
+    "req.body",
+    "req.query",
+    "req.params",
+    "@Get",
+    "@Post"
+  ],
+  "sink_patterns": [
+    "child_process",
+    "exec(",
+    "execSync",
+    "eval(",
+    "Function(",
+    "innerHTML",
+    "dangerouslySetInnerHTML",
+    ".query(",
+    "fs.readFile",
+    "fs.writeFile",
+    "JSON.parse"
+  ],
+  "notes": "Igual que JavaScript; revisar también decoradores de frameworks (NestJS @Get/@Post) como entry points."
+}

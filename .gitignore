@@ -1,0 +1,53 @@
+# HexFlaw working data
+.hexflaw/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.Python
+.python-version
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local editor and agent state
+.agents/
+.codex/
+.claude/
+CLAUDE.md
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Runtime output and logs
+*.log
+logs/
+reports/
+
+# Project paper
+docs/hexflaw-paper.*
+
+# OS files
+.DS_Store
+Thumbs.db

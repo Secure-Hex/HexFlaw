@@ -1,0 +1,27 @@
+{
+  "id": "c",
+  "name": "C",
+  "extensions": [".c", ".h"],
+  "tree_sitter_package": "tree-sitter-c",
+  "app_types": ["binary", "firmware"],
+  "vuln_profile": [
+    "command_injection",
+    "buffer_overflow",
+    "format_string",
+    "integer_overflow",
+    "use_after_free"
+  ],
+  "entry_point_patterns": ["int main", "void handle", "recv(", "read(", "argv"],
+  "sink_patterns": [
+    "system",
+    "popen",
+    "execve",
+    "execl",
+    "strcpy",
+    "strcat",
+    "sprintf",
+    "gets",
+    "memcpy"
+  ],
+  "notes": "Prestar atención a system()/popen() con datos de argv y a strcpy/sprintf sin bounds."
+}

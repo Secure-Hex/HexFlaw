@@ -1,0 +1,31 @@
+{
+  "id": "ruby",
+  "name": "Ruby",
+  "extensions": [".rb", ".rake"],
+  "tree_sitter_package": "tree-sitter-ruby",
+  "app_types": ["web"],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "deserialization",
+    "path_traversal",
+    "ssrf",
+    "mass_assignment"
+  ],
+  "entry_point_patterns": ["def ", "params[", "request.", "before_action"],
+  "sink_patterns": [
+    "system(",
+    "exec(",
+    "`",
+    "%x(",
+    "eval(",
+    "send(",
+    ".where(",
+    "find_by_sql",
+    "Marshal.load",
+    "YAML.load",
+    "File.open",
+    "open("
+  ],
+  "notes": "Atención a backticks/system con params, Marshal.load/YAML.load (deserialización) y SQL con interpolación en .where."
+}

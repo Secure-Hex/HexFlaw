@@ -1,0 +1,37 @@
+{
+  "id": "java",
+  "name": "Java",
+  "extensions": [".java"],
+  "tree_sitter_package": "tree-sitter-java",
+  "app_types": ["web", "mobile"],
+  "vuln_profile": [
+    "sql_injection",
+    "command_injection",
+    "deserialization",
+    "path_traversal",
+    "ssrf",
+    "xxe"
+  ],
+  "entry_point_patterns": [
+    "public static void main",
+    "@RequestMapping",
+    "@GetMapping",
+    "@PostMapping",
+    "doGet",
+    "doPost",
+    "getParameter"
+  ],
+  "sink_patterns": [
+    "Runtime.getRuntime().exec",
+    "ProcessBuilder",
+    "createStatement",
+    "executeQuery",
+    "executeUpdate",
+    "ObjectInputStream",
+    "readObject",
+    "new File",
+    "FileInputStream",
+    "DocumentBuilder"
+  ],
+  "notes": "Revisar Runtime.exec/ProcessBuilder, Statement sin PreparedStatement, ObjectInputStream.readObject (deserialización) y parsers XML sin protección XXE."
+}

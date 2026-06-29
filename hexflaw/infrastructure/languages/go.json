@@ -1,0 +1,38 @@
+{
+  "id": "go",
+  "name": "Go",
+  "extensions": [".go"],
+  "tree_sitter_package": "tree-sitter-go",
+  "app_types": ["web", "binary"],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "path_traversal",
+    "ssrf",
+    "deserialization"
+  ],
+  "entry_point_patterns": [
+    "func main",
+    "func Handle",
+    "http.HandleFunc",
+    "r.GET",
+    "r.POST",
+    "ctx.Req",
+    "c.Param",
+    "c.Query"
+  ],
+  "sink_patterns": [
+    "exec.Command",
+    "exec.CommandContext",
+    ".Query(",
+    ".Exec(",
+    ".Raw(",
+    "os.OpenFile",
+    "os.ReadFile",
+    "ioutil.ReadFile",
+    "template.HTML",
+    "http.Get",
+    "http.NewRequest"
+  ],
+  "notes": "Atención a os/exec.Command con input, queries SQL concatenadas y template.HTML (XSS). En firmware/IPC revisar también net/http handlers."
+}

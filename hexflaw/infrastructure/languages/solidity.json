@@ -1,0 +1,40 @@
+{
+  "id": "solidity",
+  "name": "Solidity",
+  "extensions": [".sol"],
+  "tree_sitter_package": "tree-sitter-solidity",
+  "app_types": ["contract"],
+  "vuln_profile": [
+    "reentrancy",
+    "integer_overflow",
+    "access_control",
+    "front_running",
+    "unchecked_call",
+    "tx_origin_auth"
+  ],
+  "entry_point_patterns": [
+    "function ",
+    "external",
+    "public",
+    "fallback",
+    "receive",
+    "constructor"
+  ],
+  "sink_patterns": [
+    ".call(",
+    ".call{",
+    ".delegatecall(",
+    ".send(",
+    ".transfer(",
+    "selfdestruct",
+    "suicide(",
+    "tx.origin",
+    "block.timestamp",
+    "blockhash",
+    "ecrecover",
+    "assembly",
+    "abi.encodePacked",
+    "create2"
+  ],
+  "notes": "Smart contracts: priorizar reentrancy (.call con cambio de estado posterior), access control (funciones sensibles sin modifier onlyOwner), tx.origin para auth, unchecked low-level .call/.delegatecall, y dependencia de block.timestamp/blockhash para aleatoriedad. El AST tree-sitter puede no estar disponible (grammar del pack incompatible) → análisis por archivo completo."
+}

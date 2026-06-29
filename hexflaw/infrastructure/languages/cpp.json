@@ -1,0 +1,28 @@
+{
+  "id": "cpp",
+  "name": "C++",
+  "extensions": [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"],
+  "tree_sitter_package": "tree-sitter-cpp",
+  "app_types": ["binary", "firmware"],
+  "vuln_profile": [
+    "command_injection",
+    "buffer_overflow",
+    "format_string",
+    "integer_overflow",
+    "use_after_free"
+  ],
+  "entry_point_patterns": ["int main", "void handle", "recv(", "read(", "argv"],
+  "sink_patterns": [
+    "system",
+    "popen",
+    "execve",
+    "execl",
+    "strcpy",
+    "strcat",
+    "sprintf",
+    "gets",
+    "memcpy",
+    "delete "
+  ],
+  "notes": "Como C, pero prestar atención adicional a use-after-free con delete y a sobrecargas de operadores."
+}

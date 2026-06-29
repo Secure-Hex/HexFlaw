@@ -1,0 +1,25 @@
+{
+  "id": "python",
+  "name": "Python",
+  "extensions": [".py"],
+  "tree_sitter_package": "tree-sitter-python",
+  "app_types": ["web", "binary"],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "path_traversal",
+    "deserialization",
+    "ssrf"
+  ],
+  "entry_point_patterns": ["def main", "def handle", "@app.route", "request."],
+  "sink_patterns": [
+    "os.system",
+    "subprocess",
+    "eval",
+    "exec",
+    "pickle.loads",
+    "yaml.load",
+    "open("
+  ],
+  "notes": "Atención a os.system/subprocess con shell=True y a pickle/yaml.load inseguros."
+}

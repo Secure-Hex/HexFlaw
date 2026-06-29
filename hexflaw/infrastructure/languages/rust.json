@@ -1,0 +1,26 @@
+{
+  "id": "rust",
+  "name": "Rust",
+  "extensions": [".rs"],
+  "tree_sitter_package": "tree-sitter-rust",
+  "app_types": ["binary", "web", "firmware"],
+  "vuln_profile": [
+    "command_injection",
+    "use_after_free",
+    "integer_overflow",
+    "unsafe_block_misuse",
+    "path_traversal"
+  ],
+  "entry_point_patterns": ["fn main", "pub fn", "async fn", "#[get", "#[post"],
+  "sink_patterns": [
+    "Command::new",
+    "process::Command",
+    "unsafe",
+    "from_raw_parts",
+    "transmute",
+    "std::fs::File",
+    "std::fs::read",
+    "reqwest::get"
+  ],
+  "notes": "Prestar atención a bloques unsafe, Command::new con input y from_raw_parts/transmute como principal superficie de memoria."
+}

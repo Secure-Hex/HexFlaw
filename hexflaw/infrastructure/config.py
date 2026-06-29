@@ -1,0 +1,243 @@
+"""Gestor de jerarquía de configuración (CLAUDE.md §7, §8).
+
+Precedencia (mayor gana):
+
+    Override en comando > config.json local (.hexflaw/) > config.json global
+    (~/.hexflaw/) > defaults del sistema
+
+La config global contiene **únicamente** preferencias del sistema (embedding
+backend, API keys, system profile). Nunca datos de proyecto.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from hexflaw.infrastructure import secrets_store, storage
+from hexflaw.infrastructure.logging import get_logger
+
+logger = get_logger(__name__)
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "embedding_backend": "local-cpu",
+    # Backend del LLM: "api" (Anthropic API, default), "openai" (API de OpenAI) o
+    # "agent" (agente en el loop por cola de archivos: HexFlaw parkea el prompt en
+    # disco y un agente externo —Claude Code, Codex, etc.— lo responde; cero tokens
+    # de API; ver 'hexflaw agent'). Para "openai" se mapean los tiers
+    # haiku/sonnet/opus a estos modelos (ajustables a tu catálogo de OpenAI):
+    "llm_backend": "api",
+    "openai_model_cheap": "gpt-4o-mini",  # tier 'haiku' (screening/simple)
+    "openai_model_mid": "gpt-4o",  # tier 'sonnet' (análisis estándar)
+    "openai_model_deep": "gpt-4o",  # tier 'opus' (taint/razonamiento profundo)
+    # Backend "agent" (cola de archivos). queue_dir None => ~/.hexflaw/agent_queue.
+    "agent_queue_dir": None,
+    "agent_poll_timeout": 1800,  # s máximos esperando la respuesta del agente
+    "agent_poll_interval": 1.0,  # s entre sondeos de la respuesta
+    "analysis_mode": "balanced",
+    # Techo de tokens por análisis (CLAUDE.md §16, estrategia 7). Es un ceiling, no
+    # un target: solo frena si el run lo alcanza. 500k no alcanzaba para M4+M5 en
+    # scopes de ~200 chunks (M4 agotaba el budget y M5 no llegaba a confirmar).
+    "token_budget": 1_500_000,
+    "max_file_bytes": 10 * 1024 * 1024,  # 10MB (CLAUDE.md §15, M1)
+    "max_project_bytes": 2 * 1024 * 1024 * 1024,  # 2GB
+    "model": "claude-sonnet-4-6",
+    # Rate limiting interno (CLAUDE.md §16, §15 T-M4-2). El org real observado es
+    # tier-1 = 50k input TPM por modelo (429 de Anthropic), así que 40k deja margen.
+    # Subir solo si confirmás un tier mayor en console.anthropic.com/settings/limits.
+    "rate_limit_tokens_per_min": 40_000,
+    "max_retries": 4,
+    # Fracción del token_budget que M4 reserva para que M5 (confirmación) siempre
+    # tenga presupuesto. Sin esto, M4 puede agotar el techo y dejar 0 confirmados.
+    "m5_budget_reserve": 0.30,
+    # Tope de chunks a analizar tras acotar por el target (M4 scope). Evita barrer
+    # codebases enormes cuando se da un --target específico.
+    "scope_max_chunks": 200,
+    # Modelo del backend local-cpu. Default: modelo nativo de sentence-transformers
+    # entrenado para code search (CodeSearchNet), sin trust_remote_code por seguridad.
+    "local_embedding_model": "flax-sentence-embeddings/st-codesearch-distilroberta-base",
+    "local_embedding_trust_remote_code": False,
+}
+
+
+def global_home() -> Path:
+    """Directorio global de HexFlaw (``~/.hexflaw`` u override por entorno)."""
+    raw = os.environ.get("HEXFLAW_HOME", "~/.hexflaw")
+    return Path(raw).expanduser()
+
+
+@dataclass
+class Config:
+    """Configuración efectiva tras aplicar la jerarquía de precedencia.
+
+    Attributes:
+        values: Diccionario de configuración ya mergeado.
+        sources: Trazabilidad de qué capa aportó cada estado (para ``--show``).
+    """
+
+    values: dict[str, Any] = field(default_factory=dict)
+    sources: list[str] = field(default_factory=list)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Obtiene un valor de configuración con fallback."""
+        return self.values.get(key, default)
+
+
+def load_global_config() -> dict[str, Any]:
+    """Carga ``~/.hexflaw/config.json`` si existe, validando permisos.
+
+    Verifica que el directorio global sea ``700``; si no, advierte y corrige
+    (CLAUDE.md §15, T-M0-1).
+
+    Returns:
+        Diccionario de config global (vacío si no existe el archivo).
+    """
+    home = global_home()
+    if home.exists():
+        _enforce_secure_perms(home)
+    cfg_path = home / "config.json"
+    if not cfg_path.exists():
+        return {}
+    try:
+        return dict(storage.read_json(cfg_path))
+    except (ValueError, OSError) as exc:
+        logger.warning("config.json global ilegible (%s); usando defaults", exc)
+        return {}
+
+
+def load_local_config(project_dir: Path) -> dict[str, Any]:
+    """Carga la config local de un proyecto (``<proj>/.hexflaw/config.json``).
+
+    Args:
+        project_dir: Directorio raíz del proyecto (el que contiene ``.hexflaw/``).
+
+    Returns:
+        Diccionario de config local (vacío si no existe).
+    """
+    cfg_path = project_dir / ".hexflaw" / "config.json"
+    if not cfg_path.exists():
+        return {}
+    try:
+        return dict(storage.read_json(cfg_path))
+    except (ValueError, OSError) as exc:
+        logger.warning("config.json local ilegible (%s); ignorando", exc)
+        return {}
+
+
+def resolve_config(
+    project_dir: Path | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> Config:
+    """Resuelve la configuración efectiva aplicando la jerarquía completa.
+
+    Args:
+        project_dir: Raíz del proyecto activo, o ``None`` si no hay proyecto.
+        overrides: Valores provenientes de flags de la CLI (máxima precedencia).
+            Las claves con valor ``None`` se ignoran (flag no provisto).
+
+    Returns:
+        Config efectiva con trazabilidad de fuentes.
+    """
+    merged: dict[str, Any] = dict(DEFAULT_CONFIG)
+    sources = ["defaults"]
+
+    global_cfg = load_global_config()
+    if global_cfg:
+        merged.update(global_cfg)
+        sources.append("global")
+
+    if project_dir is not None:
+        local_cfg = load_local_config(project_dir)
+        if local_cfg:
+            merged.update(local_cfg)
+            sources.append("local")
+
+    if overrides:
+        clean = {k: v for k, v in overrides.items() if v is not None}
+        if clean:
+            merged.update(clean)
+            sources.append("cli-override")
+
+    # API keys: el entorno tiene prioridad sobre lo persistido (mejor higiene).
+    for env_name, cfg_key in (
+        ("ANTHROPIC_API_KEY", "anthropic_api_key"),
+        ("VOYAGE_API_KEY", "voyage_api_key"),
+        ("OPENAI_API_KEY", "openai_api_key"),
+    ):
+        value = os.environ.get(env_name)
+        if value:
+            merged[cfg_key] = value
+
+    # Keyring del SO (CLAUDE.md §15, T-INFRA-1): rellena solo las keys que no vino
+    # ya por entorno ni por config.json. Es el store primario; el JSON es fallback.
+    for cfg_key in secrets_store.SECRET_KEYS:
+        if not merged.get(cfg_key):
+            secret = secrets_store.get_secret(cfg_key)
+            if secret:
+                merged[cfg_key] = secret
+
+    return Config(values=merged, sources=sources)
+
+
+def save_global_config(updates: dict[str, Any]) -> Path:
+    """Persiste cambios en la config global con permisos ``600``.
+
+    Args:
+        updates: Pares clave/valor a fusionar en la config global existente.
+
+    Returns:
+        Ruta del ``config.json`` global escrito.
+    """
+    home = storage.ensure_dir(global_home())
+    cfg_path = home / "config.json"
+    current = load_global_config()
+    current.update(updates)
+    storage.write_json(cfg_path, current)
+    return cfg_path
+
+
+def save_secret(cfg_key: str, value: str) -> str:
+    """Persiste una API key en el keyring del SO, con fallback a ``config.json``.
+
+    Si el keyring está disponible, guarda ahí y **elimina** cualquier copia en
+    texto plano que hubiera quedado en la config global (CLAUDE.md §15, T-INFRA-1).
+    Si no hay keyring, cae al ``config.json`` global (``600``) y deja constancia.
+
+    Args:
+        cfg_key: Clave de config del secreto (ej. ``anthropic_api_key``).
+        value: Valor del secreto.
+
+    Returns:
+        ``"keyring"`` o ``"config.json"`` según dónde se almacenó.
+    """
+    if secrets_store.set_secret(cfg_key, value):
+        # Quitar cualquier copia en texto plano previa de la config global.
+        current = load_global_config()
+        if cfg_key in current:
+            del current[cfg_key]
+            cfg_path = global_home() / "config.json"
+            storage.write_json(cfg_path, current)
+        return "keyring"
+
+    save_global_config({cfg_key: value})
+    logger.warning(
+        "keyring no disponible: '%s' se guardó en config.json (600). Instala el "
+        "extra 'secrets' (pip install hexflaw[secrets]) para usar el keyring del SO.",
+        cfg_key,
+    )
+    return "config.json"
+
+
+def _enforce_secure_perms(home: Path) -> None:
+    """Verifica/corrige permisos ``700`` del directorio global."""
+    try:
+        mode = home.stat().st_mode & 0o777
+        if mode != storage.DIR_MODE:
+            logger.warning(
+                "%s tiene permisos %o, corrigiendo a 700", home, mode
+            )
+            os.chmod(home, storage.DIR_MODE)
+    except OSError as exc:
+        logger.debug("No se pudieron verificar permisos de %s: %s", home, exc)

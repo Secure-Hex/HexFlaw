@@ -1,0 +1,34 @@
+{
+  "id": "php",
+  "name": "PHP",
+  "extensions": [".php", ".phtml"],
+  "tree_sitter_package": "tree-sitter-php",
+  "app_types": ["web"],
+  "vuln_profile": [
+    "sql_injection",
+    "command_injection",
+    "xss",
+    "path_traversal",
+    "ssrf",
+    "deserialization",
+    "file_inclusion"
+  ],
+  "entry_point_patterns": ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "function "],
+  "sink_patterns": [
+    "system(",
+    "exec(",
+    "shell_exec",
+    "passthru",
+    "popen",
+    "eval(",
+    "mysql_query",
+    "mysqli_query",
+    "->query(",
+    "include",
+    "require",
+    "unserialize",
+    "file_get_contents",
+    "fopen"
+  ],
+  "notes": "Superlativo riesgo en $_GET/$_POST llegando a system/eval, queries sin PDO prepared y include/require con input (LFI/RFI)."
+}

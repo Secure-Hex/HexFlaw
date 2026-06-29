@@ -1,0 +1,40 @@
+{
+  "id": "javascript",
+  "name": "JavaScript",
+  "extensions": [".js", ".jsx", ".mjs", ".cjs"],
+  "tree_sitter_package": "tree-sitter-javascript",
+  "app_types": ["web"],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "xss",
+    "ssrf",
+    "path_traversal",
+    "deserialization",
+    "prototype_pollution"
+  ],
+  "entry_point_patterns": [
+    "app.get",
+    "app.post",
+    "router.",
+    "req.body",
+    "req.query",
+    "req.params",
+    "addEventListener"
+  ],
+  "sink_patterns": [
+    "child_process",
+    "exec(",
+    "execSync",
+    "eval(",
+    "Function(",
+    "innerHTML",
+    "dangerouslySetInnerHTML",
+    ".query(",
+    "fs.readFile",
+    "fs.writeFile",
+    "require(",
+    "JSON.parse"
+  ],
+  "notes": "Revisar child_process.exec, eval/Function, innerHTML (XSS) y queries SQL sin parametrizar."
+}

@@ -1,0 +1,572 @@
+"""M4 — Static Analysis (CLAUDE.md §6 M4, §16 estrategias 1/2/4).
+
+Mayor consumidor de tokens del pipeline. Aplica optimizaciones desde el día 1:
+- Pre-filtrado keyword (capa 1, costo cero): descarta chunks sin ningún sink
+  relevante al vuln_profile antes de gastar tokens.
+- Batching: agrupa varios chunks por llamada al LLM.
+- Delimitadores anti-prompt-injection vía :class:`LLMService` (T-M4-1).
+
+El filtro por embeddings (capa 2) y el caché por hash de chunk quedan
+enganchables; sus puntos de extensión están señalados.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+from typing import Callable
+
+from hexflaw.core.models import (
+    CodeChunk,
+    Finding,
+    FindingSet,
+    FindingStatus,
+    IngestionResult,
+    TargetDefinition,
+)
+from hexflaw.infrastructure.analysis_cache import AnalysisCache
+from hexflaw.infrastructure.logging import get_logger
+from hexflaw.services.embedding.base import EmbeddingService
+from hexflaw.services.language_service import LanguageService
+from hexflaw.services.llm_service import (
+    BudgetExceededError,
+    LLMService,
+    LLMServiceError,
+)
+
+logger = get_logger(__name__)
+
+# Mapa de tipo de vuln → keywords/sinks indicativos (refuerza los del lenguaje).
+# Cubre idioms multi-lenguaje (Python, PHP, C, Node/JS/TS, Go, Java) porque el
+# filtro de capa 1 es substring case-insensitive: un keyword PHP/Python que no
+# matchea Node colapsa el scope en codebases JS/TS (visto en Dockge).
+_VULN_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "command_injection": (
+        "system", "popen", "exec", "subprocess", "shell", "os.system",
+        "spawn", "execfile", "execsync", "child_process", "proc_open",
+        "pcntl_exec", "passthru", "shell_exec", "eval(", "pty",
+    ),
+    "sql_injection": (
+        "execute", "query", "select", "cursor", "sql", "db_fetch", "db_execute",
+        ".raw(", "knex", "prepare", "mysqli", "pg_query",
+    ),
+    "buffer_overflow": ("strcpy", "strcat", "sprintf", "gets", "memcpy"),
+    "format_string": ("printf", "fprintf", "snprintf"),
+    "path_traversal": (
+        "open(", "fopen", "readfile", "writefile", "createreadstream",
+        "sendfile", "unlink", "path.join", "fs.", "realpath", "../",
+        "include", "require(", "file_get_contents", "move_uploaded",
+    ),
+    "deserialization": (
+        "pickle", "yaml.load", "unserialize", "marshal", "node-serialize",
+        "objectinputstream", "readobject", "json.parse",
+    ),
+    "ssrf": (
+        "requests.get", "urlopen", "curl", "fetch(", "axios", ".get(",
+        "request(", "openconnection", "httpurlconnection", "resttemplate",
+        "webclient", "http.get", "got(",
+    ),
+    "xss": (
+        "innerhtml", "v-html", "dangerouslysetinnerhtml", "document.write",
+        "echo", "print(", "render", "html(", "|safe", "|raw",
+    ),
+}
+
+_BATCH_SIZES = {"thorough": 5, "balanced": 10, "economy": 20}
+
+_FINDINGS_INSTRUCTION = (
+    "Analiza el siguiente código en busca ÚNICAMENTE de estas clases de "
+    "vulnerabilidad: {vulns}. Para cada función sospechosa devuelve un objeto. "
+    "Responde SOLO con JSON válido, sin texto adicional, con esta forma:\n"
+    '{{"findings": [{{"type": "<clase>", "file": "<archivo>", "line": <int>, '
+    '"function": "<nombre>", "confidence": <0..1>, "snippet": "<línea vulnerable>", '
+    '"rationale": "<breve>"}}]}}\n'
+    "Si no hay vulnerabilidades, devuelve {{\"findings\": []}}.\n"
+    "Cada chunk viene precedido por una cabecera '### FILE: <archivo> FUNC: <nombre>'."
+)
+
+
+def analyze(
+    ingestion: IngestionResult,
+    target: TargetDefinition,
+    llm: LLMService,
+    languages_service: LanguageService,
+    *,
+    mode: str = "balanced",
+    model: str | None = None,
+    embedding: EmbeddingService | None = None,
+    cache: AnalysisCache | None = None,
+    scope_query: str | None = None,
+    scope_max_chunks: int = 200,
+    scope_boost_paths: list[str] | None = None,
+    on_status: "Callable[[str], None] | None" = None,
+    coverage: dict | None = None,
+) -> FindingSet:
+    """Ejecuta el análisis estático preliminar sobre el scope del target.
+
+    Args:
+        ingestion: Resultado de M1 (chunks).
+        target: Resultado de M2 (vuln_profile y superficie de ataque).
+        llm: Servicio LLM inyectado.
+        languages_service: Para resolver sinks por lenguaje.
+        mode: Modo de análisis (controla batch size y umbral de embeddings).
+        model: Override de modelo para las llamadas.
+        embedding: Backend de embeddings para los filtros por similitud (opcional).
+        cache: Caché de análisis por hash de chunk (opcional).
+        scope_query: Descripción del target. Si se provee junto con ``embedding``,
+            acota el análisis a los chunks semánticamente más cercanos a esa
+            funcionalidad (CLAUDE.md §6 M2: el target define el scope real).
+        scope_max_chunks: Tope de chunks tras el scoping por target.
+        on_status: Callback opcional para reportar sub-fases (observabilidad CLI).
+
+    Returns:
+        :class:`FindingSet` con hallazgos preliminares (status=preliminary).
+    """
+    notify: Callable[[str], None] = on_status or (lambda _msg: None)
+    chosen_model = model or llm.default_model
+    relevant = _prefilter(ingestion, target, languages_service)
+    logger.info(
+        "M4 capa 1 (keyword): %d/%d chunks", len(relevant), len(ingestion.chunks)
+    )
+    # Los chunks bajo --path saltan el filtro keyword: la intención explícita del
+    # usuario manda sobre la heurística de sinks (que no conoce wrappers propios
+    # del proyecto, ej. gitcmd.NewCommand en vez de exec.Command).
+    if scope_boost_paths:
+        seen = {c.id for c in relevant}
+        extra = [
+            c
+            for c in ingestion.chunks
+            if c.id not in seen and any(p in c.file for p in scope_boost_paths)
+        ]
+        if extra:
+            relevant = relevant + extra
+            logger.info("M4: +%d chunks del path (bypass keyword filter)", len(extra))
+    # Capa 2 — ranking semántico por embeddings (no umbral). Acota a los
+    # scope_max_chunks más relevantes al target SIN descartar sinks que capa 1
+    # ya identificó. Usar umbral aquí causaba falsos negativos (ocultaba vulns
+    # reales); el ranking top-N preserva recall, que es lo que importa en SAST.
+    if embedding is not None:
+        query = scope_query or " ".join(target.vuln_profile) or "security vulnerability"
+        notify(f"M4 · ranking semántico (embeddings, {len(relevant)} chunks)")
+        relevant = _scope_filter(
+            relevant, query, embedding, scope_max_chunks, scope_boost_paths
+        )
+        logger.info("M4 ranking semántico: %d chunks", len(relevant))
+
+    # Deduplicación (CLAUDE.md §15 T-M4-3, §16): nunca analizar el mismo código
+    # dos veces. Exacta por hash (gratis) + near-dup por coseno > 0.95. Los chunks
+    # bajo --path nunca se descartan (intención explícita del usuario).
+    before_dedup = len(relevant)
+    relevant = _dedup_chunks(relevant, embedding, keep_paths=scope_boost_paths)
+    if coverage is not None:
+        coverage["deduped"] = before_dedup - len(relevant)
+
+    # Caché por hash de chunk: separa hits de los que requieren LLM (estrategia 3).
+    findings: list[Finding] = []
+    counter = 1
+    to_analyze: list[CodeChunk] = []
+    for chunk in relevant:
+        cached = _cache_get(cache, chunk, chosen_model, target.vuln_profile)
+        if cached is not None:
+            for raw in cached:
+                findings.append(_to_finding(raw, counter, [chunk]))
+                counter += 1
+        else:
+            to_analyze.append(chunk)
+
+    batch_size = _BATCH_SIZES.get(mode, 10)
+    total_batches = (len(to_analyze) + batch_size - 1) // batch_size
+    if cache is not None and len(to_analyze) < len(relevant):
+        logger.info("M4 caché: %d chunks reutilizados", len(relevant) - len(to_analyze))
+    for batch_idx, batch in enumerate(_batches(to_analyze, batch_size), start=1):
+        notify(f"M4 · análisis LLM · batch {batch_idx}/{total_batches}")
+        prompt = _FINDINGS_INSTRUCTION.format(vulns=", ".join(target.vuln_profile) or "all")
+        code_blob = "\n\n".join(
+            f"### FILE: {c.file} FUNC: {c.name}\n{c.code}" for c in batch
+        )
+        try:
+            response = llm.analyze_code(
+                prompt,
+                code_blob,
+                model=chosen_model,
+                trace_label=f"M4 · análisis batch {batch_idx}/{total_batches}",
+            )
+        except BudgetExceededError as exc:
+            logger.warning("M4 detenido por budget: %s", exc)
+            break  # no seguir gastando tokens
+        except LLMServiceError as exc:
+            logger.error("Fallo LLM en batch (se omite): %s", exc)
+            continue
+
+        raw_findings = _parse_findings(response.text)
+        _cache_store(cache, batch, raw_findings, chosen_model, target.vuln_profile)
+        for raw in raw_findings:
+            findings.append(_to_finding(raw, counter, batch))
+            counter += 1
+
+    if cache is not None:
+        cache.flush()
+        logger.info("M4 caché: %d hits", cache.hits)
+    logger.info("M4 produjo %d hallazgos preliminares", len(findings))
+
+    if coverage is not None:
+        files_with_findings = {f.file for f in findings}
+        coverage["scoped"] = len(relevant)
+        coverage["analyzed_llm"] = len(to_analyze)
+        coverage["from_cache"] = len(relevant) - len(to_analyze)
+        if scope_boost_paths:
+            path_chunks = [
+                c for c in relevant if any(p in c.file for p in scope_boost_paths)
+            ]
+            # Funciones del path analizadas y sin hallazgos (auditadas → limpias).
+            coverage["path_analyzed"] = [
+                f"{c.file}::{c.name}" for c in path_chunks
+            ]
+            coverage["path_clean"] = [
+                f"{c.file}::{c.name}"
+                for c in path_chunks
+                if c.file not in files_with_findings
+            ]
+    return FindingSet(project_id=ingestion.project_id, findings=findings)
+
+
+def _scope_filter(
+    chunks: list[CodeChunk],
+    scope_query: str,
+    embedding: EmbeddingService,
+    max_chunks: int,
+    boost_paths: list[str] | None = None,
+    path_boost: float = 1.0,
+) -> list[CodeChunk]:
+    """Acota los chunks a la funcionalidad del target por ranking de similitud.
+
+    Embebe la descripción del target y conserva los ``max_chunks`` chunks con
+    mayor score (ranking, no umbral absoluto — robusto entre modelos).
+
+    ``boost_paths`` actúa como un *plus*, no como filtro duro: los chunks cuyo
+    archivo coincide con alguno de esos paths reciben un bonus al score, así
+    suben al tope — pero los chunks que el propio sistema considera muy
+    relevantes (alta similitud semántica) fuera del path siguen entrando si
+    queda capacidad. El usuario apunta sin perder lo que el sistema detecta.
+
+    Args:
+        chunks: Chunks supervivientes de capa 1.
+        scope_query: Descripción del target.
+        embedding: Backend de embeddings.
+        max_chunks: Cantidad máxima de chunks a conservar.
+        boost_paths: Substrings de ruta a priorizar (de ``--path``).
+        path_boost: Bonus de score sumado a los chunks que coinciden con un path.
+
+    Returns:
+        Los chunks mejor rankeados (a lo sumo ``max_chunks``).
+    """
+    boost_paths = boost_paths or []
+    if len(chunks) <= max_chunks and not boost_paths:
+        return chunks
+    try:
+        query_vec = embedding.embed(scope_query)
+        chunk_vecs = embedding.embed_batch([c.code for c in chunks])
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("Scoping por target omitido (%s)", exc)
+        return chunks
+
+    def score(chunk: CodeChunk, vec: list[float]) -> float:
+        base = _cosine(query_vec, vec)
+        if boost_paths and any(p in chunk.file for p in boost_paths):
+            return base + path_boost  # plus por coincidir con el path apuntado
+        return base
+
+    scored = sorted(
+        zip(chunks, chunk_vecs), key=lambda pair: score(*pair), reverse=True
+    )
+    kept = [chunk for chunk, _ in scored[:max_chunks]]
+    if boost_paths:
+        matched = sum(1 for c in kept if any(p in c.file for p in boost_paths))
+        logger.info(
+            "M4 scope: %d/%d chunks del path apuntado (resto: picks del sistema)",
+            matched,
+            len(kept),
+        )
+    return kept
+
+
+#: Umbral de similitud coseno para considerar dos chunks near-duplicados (§16).
+_DEDUP_THRESHOLD = 0.95
+
+
+def _dedup_chunks(
+    chunks: list[CodeChunk],
+    embedding: EmbeddingService | None,
+    *,
+    keep_paths: list[str] | None = None,
+    threshold: float = _DEDUP_THRESHOLD,
+) -> list[CodeChunk]:
+    """Elimina chunks duplicados/near-duplicados antes del LLM (T-M4-3, §16).
+
+    Dos capas: (1) dedup exacta por hash de chunk (costo cero); (2) near-dup por
+    similitud coseno > ``threshold`` (solo si hay backend de embeddings). Los
+    chunks cuyo archivo coincide con ``keep_paths`` (``--path``) nunca se
+    descartan. No hay truncación silenciosa: lo eliminado se loguea.
+
+    Args:
+        chunks: Chunks candidatos (post-scope).
+        embedding: Backend de embeddings, o ``None`` (solo dedup exacta).
+        keep_paths: Substrings de ruta que nunca se deduplican.
+        threshold: Umbral coseno para near-dup.
+
+    Returns:
+        Los chunks únicos, preservando el orden de entrada.
+    """
+    keep_paths = keep_paths or []
+
+    def is_protected(chunk: CodeChunk) -> bool:
+        return any(p in chunk.file for p in keep_paths)
+
+    # Capa 1 — dedup exacta por hash (gratis). Protegidos siempre pasan.
+    seen_hashes: set[str] = set()
+    unique: list[CodeChunk] = []
+    for chunk in chunks:
+        if not is_protected(chunk) and chunk.hash in seen_hashes:
+            continue
+        seen_hashes.add(chunk.hash)
+        unique.append(chunk)
+    exact_dropped = len(chunks) - len(unique)
+
+    # Capa 2 — near-dup por coseno (requiere embeddings).
+    if embedding is None or len(unique) < 2:
+        if exact_dropped:
+            logger.info("M4 dedup: -%d chunks idénticos (hash)", exact_dropped)
+        return unique
+
+    try:
+        vecs = embedding.embed_batch([c.code for c in unique])
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("Dedup near-dup omitida (%s)", exc)
+        return unique
+
+    kept: list[CodeChunk] = []
+    kept_vecs: list[list[float]] = []
+    near_dropped = 0
+    for chunk, vec in zip(unique, vecs):
+        if not is_protected(chunk) and any(
+            _cosine(vec, kv) > threshold for kv in kept_vecs
+        ):
+            near_dropped += 1
+            continue
+        kept.append(chunk)
+        kept_vecs.append(vec)
+
+    if exact_dropped or near_dropped:
+        logger.info(
+            "M4 dedup: -%d idénticos (hash), -%d near-dup (coseno>%.2f); %d → %d",
+            exact_dropped, near_dropped, threshold, len(chunks), len(kept),
+        )
+    return kept
+
+
+def _cache_get(
+    cache: AnalysisCache | None, chunk: CodeChunk, model: str, vuln_profile: list[str]
+) -> list[dict] | None:
+    """Recupera findings cacheados para un chunk, si hay caché."""
+    if cache is None:
+        return None
+    return cache.get(AnalysisCache.make_key(chunk.hash, model, vuln_profile))
+
+
+def _cache_store(
+    cache: AnalysisCache | None,
+    batch: list[CodeChunk],
+    raw_findings: list[dict],
+    model: str,
+    vuln_profile: list[str],
+) -> None:
+    """Atribuye cada finding a su chunk (por archivo + línea) y lo cachea.
+
+    Cada chunk del batch obtiene una entrada de caché (lista vacía si no tuvo
+    findings), de modo que un hit posterior reproduzca exactamente el resultado.
+    """
+    if cache is None:
+        return
+    attributed: dict[str, list[dict]] = {c.id: [] for c in batch}
+    for raw in raw_findings:
+        chunk = _attribute_chunk(raw, batch)
+        if chunk is not None:
+            attributed[chunk.id].append(raw)
+    for chunk in batch:
+        key = AnalysisCache.make_key(chunk.hash, model, vuln_profile)
+        cache.set(key, attributed[chunk.id])
+
+
+def _attribute_chunk(raw: dict, batch: list[CodeChunk]) -> CodeChunk | None:
+    """Encuentra el chunk del batch al que pertenece un finding del LLM."""
+    file = str(raw.get("file", ""))
+    try:
+        line = int(raw.get("line", 0))
+    except (TypeError, ValueError):
+        line = 0
+    same_file = [c for c in batch if c.file == file]
+    for chunk in same_file:
+        if chunk.line_start <= line <= chunk.line_end:
+            return chunk
+    if same_file:
+        return same_file[0]
+    return batch[0] if batch else None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Similitud coseno entre dos vectores (0 si alguno es nulo)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _profile_keywords(
+    target: TargetDefinition,
+    languages_service: LanguageService,
+    ingestion_langs: list[str] | None,
+) -> set[str]:
+    """Reúne keywords/sinks indicativos del vuln_profile y los lenguajes.
+
+    Args:
+        target: Definición de target (vuln_profile).
+        languages_service: Para resolver sink_patterns por lenguaje.
+        ingestion_langs: Lenguajes presentes; ``None`` usa los del target.
+
+    Returns:
+        Conjunto de keywords en minúsculas.
+    """
+    keywords: set[str] = set()
+    for vuln in target.vuln_profile:
+        keywords.update(_VULN_KEYWORDS.get(vuln, ()))
+    langs = ingestion_langs if ingestion_langs is not None else []
+    for lang_id in langs:
+        definition = languages_service.get(lang_id)
+        if definition:
+            keywords.update(definition.sink_patterns)
+    return {k.lower() for k in keywords}
+
+
+def _prefilter(
+    ingestion: IngestionResult,
+    target: TargetDefinition,
+    languages_service: LanguageService,
+) -> list[CodeChunk]:
+    """Capa 1 — filtro keyword (costo cero) sobre el vuln_profile activo.
+
+    Mantiene solo chunks que contienen al menos un sink/keyword indicativo de
+    alguna vuln del perfil. Esto es lo que evita gastar tokens en código inerte.
+    """
+    keywords = _profile_keywords(target, languages_service, ingestion.languages)
+    if not keywords:
+        return list(ingestion.chunks)  # sin perfil: no filtramos
+
+    # Fail-open por-lenguaje: un lenguaje SIN sink_patterns curados no tiene
+    # cobertura de keywords confiable; filtrarlo arriesga falsos negativos
+    # silenciosos (idioms desconocidos). Para esos lenguajes NO filtramos —
+    # se analizan todos sus chunks. Mejor pagar tokens que perder una vuln.
+    uncovered: set[str] = set()
+    for lang in ingestion.languages:
+        definition = languages_service.get(lang)
+        if definition is None or not definition.sink_patterns:
+            uncovered.add(lang)
+    if uncovered:
+        logger.warning(
+            "Lenguajes sin sink_patterns curados (fail-open, se analizan completos): "
+            "%s. Generá sinks con 'hexflaw languages learn <lang>' para filtrar y "
+            "ahorrar tokens.",
+            ", ".join(sorted(uncovered)),
+        )
+
+    return [
+        chunk
+        for chunk in ingestion.chunks
+        if chunk.language in uncovered
+        or any(k in chunk.code.lower() for k in keywords)
+    ]
+
+
+def _batches(items: list, size: int):
+    """Particiona ``items`` en lotes de tamaño ``size``."""
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _parse_findings(text: str) -> list[dict]:
+    """Extrae el array de findings de la respuesta del LLM de forma robusta.
+
+    Tolera que el modelo envuelva el JSON en fences o agregue texto alrededor.
+
+    Args:
+        text: Respuesta cruda del LLM.
+
+    Returns:
+        Lista de dicts de findings (vacía si no se puede parsear).
+    """
+    candidate = _extract_json_object(text)
+    if candidate is None:
+        logger.warning("Respuesta LLM sin JSON parseable; 0 findings de este batch")
+        return []
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        logger.warning("JSON de findings inválido: %s", exc)
+        return []
+    findings = data.get("findings", []) if isinstance(data, dict) else []
+    return [f for f in findings if isinstance(f, dict)]
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Devuelve el primer objeto JSON balanceado encontrado en ``text``."""
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        return fence.group(1)
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _to_finding(raw: dict, index: int, batch: list) -> Finding:
+    """Convierte un dict crudo del LLM en un :class:`Finding` validado.
+
+    Completa ``file``/``function`` desde el batch si el modelo los omitió o
+    alucinó, anclando el hallazgo a un chunk real cuando es posible.
+    """
+    file = str(raw.get("file", "")) or (batch[0].file if batch else "")
+    function = raw.get("function")
+    line = raw.get("line", 0)
+    try:
+        line = int(line)
+    except (TypeError, ValueError):
+        line = 0
+    confidence = raw.get("confidence", 0.0)
+    try:
+        confidence = max(0.0, min(1.0, float(confidence)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    return Finding(
+        id=f"F{index:03d}",
+        type=str(raw.get("type", "unknown")),
+        file=file,
+        line=line,
+        function=str(function) if function else None,
+        confidence=confidence,
+        snippet=str(raw.get("snippet", ""))[:500],
+        status=FindingStatus.PRELIMINARY,
+        rationale=str(raw.get("rationale", ""))[:500],
+    )
