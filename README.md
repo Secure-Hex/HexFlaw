@@ -24,8 +24,8 @@ Por cada vulnerabilidad confirmada produce:
 
 - **Local-first**: el código del cliente nunca sale de la máquina salvo decisión
   explícita. El backend de embeddings por defecto corre en CPU local.
-- **Bajo costo en tokens**: el LLM es caro; HexFlaw aplica varias capas de filtrado
-  barato *antes* de gastar una sola llamada (ver §4.7).
+- **Bajo costo en tokens**: el LLM es caro; HexFlaw aplica **4 capas de filtrado
+  barato** *antes* de gastar una sola llamada (ver §4.6).
 - **Recall sobre precisión en el filtrado**: en seguridad, un falso negativo (vuln
   no encontrada) es peor que un falso positivo. Los filtros previos al LLM están
   calibrados para **no descartar sinks reales**.
@@ -174,9 +174,9 @@ hexflaw run ./codigo/ --target "..." --format pdf
         ↓
 [M2 Target Definition]  ← qué analizar: directed (--target) o discovery
         ↓
-[M3 Code Graph]         ← call graph, entry points, sinks
+[M3 Code Graph]         ← call/data/control flow, entry points, sinks
         ↓
-[M4 Static Analysis]    ← filtrado barato → LLM → hallazgos preliminares
+[M4 Static Analysis]    ← 4 capas de filtrado barato → LLM → preliminares
         ↓
 [M5 Taint + Confirm]    ← ¿el input alcanza el sink? → confirmed/conditional/...
         ↓
@@ -510,39 +510,98 @@ Para verlo: `hexflaw graph` (§3.3).
 ### 4.6 M4 — Static Analysis: gastar tokens con cuidado
 
 M4 es el **mayor consumidor de tokens** del pipeline: acá es donde el LLM mira el código.
-Por eso, antes de gastar una sola llamada, aplicamos filtros baratos en cascada:
+Por eso, antes de gastar una sola llamada, aplicamos filtros baratos en cascada.
 
-1. **Pre-filtrado por keyword (costo cero).** Si el perfil de vulns incluye
-   `command_injection`, solo pasan chunks que contengan algún sink relevante
-   (`system`, `exec`, `subprocess`, `shell`, …). Código inerte se descarta sin LLM. Es de
-   alto *recall*: un chunk con el keyword pasa; mejor de más que de menos.
+#### Las 4 capas del prefiltro
 
-2. **Ranking semántico por embeddings.** De los supervivientes, se rankean por cercanía
-   al target (§4.4) y se conservan los top-N (`scope_max_chunks`, default 200). Con
-   `--path`, los chunks apuntados reciben un bonus y *saltan* el filtro de keyword (la
-   intención explícita del usuario manda sobre la heurística — un wrapper propio del
-   proyecto, ej. `gitcmd.NewCommand`, no es un sink estándar y el keyword no lo conoce).
+Cada capa existe porque **se midió un caso que las anteriores no cubrían**. El orden no
+es arbitrario: va de lo más barato y auditable a lo más difuso.
 
-> **Decisión de diseño — sin umbral en el filtro semántico.** Una versión previa aplicaba
-> *además* un filtro por umbral de similitud sobre cada vuln. En la práctica descartaba
-> sinks reales que el keyword ya había identificado (medido: cortaba de 200 a 4 chunks,
-> ocultando 10 de 12 sinks `shell=True` legítimos). En SAST eso es lo peor: **falsos
-> negativos**. Lo eliminamos. El ranking top-N ya hace el trabajo de acotar sin perder
-> recall. La regla: los filtros previos al LLM **nunca** deben descartar un sink que el
-> keyword identificó.
+| # | Capa | Qué rescata que las otras no | Costo | ¿Deja razón auditable? |
+|---|---|---|---|---|
+| 0 | **Aprendizaje de sinks** | Lenguajes sin `sink_patterns` curados | 1 llamada al LLM, cacheada | sí — la lista queda en el proyecto |
+| 1 | **Keywords + ranking semántico** | El caso base | cero | sí — qué keyword matcheó |
+| 2 | **Rescate por grafo** | Helpers propios del proyecto | cero | sí — *"llama a `run_cmd`, que es sink"* |
+| 3 | **Rescate semántico** | Sinks que no están en ningún catálogo | cero (embeddings locales) | **no** — solo un score |
 
-3. **Deduplicación.** Antes de gastar tokens se eliminan chunks repetidos: exacta por
-   hash (gratis) y **near-duplicados por similitud coseno > 0.95** (cuando hay
-   embeddings). Nunca se analiza el mismo código dos veces. Los chunks apuntados con
-   `--path` nunca se descartan, y lo eliminado se loguea (sin truncación silenciosa).
+**Capa 0 — aprendizaje de sinks.** Un lenguaje sin `sink_patterns` hace *fail-open*: se
+analizan todos sus chunks para no perder vulns. Es correcto pero se paga en cada corrida.
+Antes de M3 se le pide al LLM que derive los sinks de ese lenguaje usando código real del
+proyecto. Una llamada única sale más barata que el fail-open recurrente. Lo aprendido
+queda en el `.hexflaw/` del proyecto y **no** en el custom global: un helper del proyecto
+de un cliente no tiene por qué marcar nada en el del siguiente. Se desactiva con
+`auto_learn_sinks: false`.
 
-4. **Batching.** En vez de una llamada por función, se agrupan varias funciones
-   relacionadas por llamada hasta llenar el contexto. ~1000 funciones / 10 por batch = 100
-   llamadas en vez de 1000.
+**Capa 1 — keywords + ranking semántico (costo cero).** Si el perfil incluye
+`command_injection`, solo pasan chunks con algún sink relevante (`system`, `exec`,
+`subprocess`, …). De los supervivientes se rankean por cercanía al target (§4.4) y se
+conservan los top-N (`scope_max_chunks`, default 200). Con `--path`, los chunks apuntados
+reciben un bonus y *saltan* el filtro de keyword: la intención explícita del usuario manda
+sobre la heurística.
 
-5. **Caché por hash de chunk.** Si un chunk ya fue analizado (mismo hash + mismo modelo +
-   mismo perfil de vulns), se reutiliza el resultado sin llamar al LLM. Clave en
-   re-análisis del mismo codebase con distinto target.
+**Capa 2 — rescate por grafo (costo cero).** M3 corre antes que M4, así que el code graph
+ya existe cuando el prefiltro decide. Un chunk que **alcanza un sink por el grafo de
+llamadas** (hasta `m4_sink_rescue_hops`, default 2) se conserva aunque no tenga ninguna
+keyword. Cubre el patrón que más falsos negativos produce:
+
+```python
+# utils.py
+def run_cmd(c):          # dice "subprocess" → pasa el filtro
+    subprocess.run(c, shell=True)
+
+# api.py
+def handler(user):       # NO dice ninguna keyword → se descartaba
+    run_cmd(user)        # ...y acá es donde el input llega sin sanitizar
+```
+
+Sin esta capa el LLM veía `run_cmd`, donde el dato ya viene de adentro, y nunca veía
+`handler`. No es que se evaluara y se descartara: no se miraba.
+
+**Capa 3 — rescate semántico (última red).** Lo que ninguna keyword vio y que tampoco
+llama a un sink conocido se compara por similitud coseno contra **ejemplos de código** de
+cada clase del perfil. Cubre el hueco final: un sink que no está en ningún catálogo, en un
+chunk que tampoco llama a nada catalogado.
+
+> **La consulta son ejemplos de código, no descripciones en prosa — y eso está medido.**
+> Con prosa la separación entre código peligroso e inerte era de **+0.007**: un
+> `formatear(nombre)` inocente puntuaba 0.349 contra una escritura de archivo en 0.356,
+> indistinguibles. Con ejemplos de código sube a **+0.150**. El modelo de embeddings está
+> entrenado sobre código; compararlo contra una frase en español tira la mitad de la
+> señal. El umbral por defecto (0.22) cae en ese hueco medido — peligroso ≥ 0.29, inerte
+> ≤ 0.14 — y no es una intuición.
+
+Es el único rescate **sin razón auditable**: la capa 2 puede decir *"lo mantengo porque
+llama a `run_cmd`"*, esta solo tiene un número. Por eso va última, con umbral y tope duro
+(`m4_semantic_rescue_threshold`, `m4_semantic_rescue_max`), ordenando por score.
+
+**El techo que queda.** Un sink novedoso cuyo código *no se parezca* a los ejemplos no lo
+agarra ninguna capa. Para eso está `--exhaustive`, que saltea el prefiltro entero. El
+prefiltro es una optimización de costo, y toda optimización de costo tiene un techo de
+recall.
+
+> **Decisión de diseño — sin umbral en el ranking de la capa 1.** Una versión previa
+> aplicaba *además* un filtro por umbral de similitud sobre cada vuln. En la práctica
+> descartaba sinks reales que el keyword ya había identificado (medido: cortaba de 200 a 4
+> chunks, ocultando 10 de 12 sinks `shell=True` legítimos). En SAST eso es lo peor:
+> **falsos negativos**. Lo eliminamos. El ranking top-N ya acota sin perder recall. La
+> regla: los filtros previos al LLM **nunca** deben descartar un sink que el keyword
+> identificó. (El umbral de la capa 3 es otra cosa: ahí no hay keyword que respetar, y
+> sin umbral se rescataría cualquier cosa.)
+
+#### Después del prefiltro
+
+Sobre lo que sobrevive a las 4 capas se aplican tres optimizaciones más:
+
+- **Deduplicación.** Se eliminan chunks repetidos: exacta por hash (gratis) y
+  **near-duplicados por similitud coseno > 0.95** (cuando hay embeddings). Nunca se
+  analiza el mismo código dos veces. Los chunks apuntados con `--path` nunca se descartan,
+  y lo eliminado se loguea (sin truncación silenciosa).
+- **Batching.** En vez de una llamada por función, se agrupan varias funciones
+  relacionadas hasta llenar el contexto. ~1000 funciones / 10 por batch = 100 llamadas en
+  vez de 1000.
+- **Caché por hash de chunk.** Si un chunk ya fue analizado (mismo hash + mismo modelo +
+  mismo perfil de vulns), se reutiliza el resultado sin llamar al LLM. Clave en
+  re-análisis del mismo codebase con distinto target.
 
 El LLM recibe el código entre delimitadores `<CODE></CODE>` con instrucción explícita de
 tratarlo como **datos, nunca instrucciones** (defensa contra prompt injection desde el
@@ -555,8 +614,11 @@ en JSON.
 
 | Estrategia | Idea | Ahorro |
 |---|---|---|
-| Pre-filtrado keyword | descartar código sin sinks, costo cero | ~60% de chunks |
-| Ranking semántico | mandar solo los N más relevantes al target | acota a top-N |
+| Aprendizaje de sinks (capa 0) | evitar el fail-open de un lenguaje sin cobertura | 1 llamada en vez de analizar todo, cada vez |
+| Pre-filtrado keyword (capa 1) | descartar código sin sinks, costo cero | ~60% de chunks |
+| Ranking semántico (capa 1) | mandar solo los N más relevantes al target | acota a top-N |
+| Rescate por grafo (capa 2) | recuperar callers de sinks sin keyword | +recall, costo cero |
+| Rescate semántico (capa 3) | recuperar lo que *se parece* a un sink | +recall, acotado por tope |
 | Deduplicación | no analizar código repetido/near-dup (coseno > 0.95) | quita duplicados |
 | Batching | varias funciones por llamada | ~85% de llamadas |
 | Caché por chunk | no re-analizar código sin cambios | 50–90% en re-análisis |
