@@ -231,6 +231,28 @@ findings/ + reports/ + poc/
   descartado. Sirve para el patrón "el mismo bug copiado en cinco endpoints". Activo
   por defecto, salvo en `--mode economy` o `--exhaustive` (ahí ya se analizó todo).
 
+#### Ampliar el catálogo de sinks
+
+Las definiciones de lenguaje traen sinks curados a mano. Se pueden ampliar con
+catálogos externos:
+
+```bash
+# CodeQL (MIT) — ya viene importado en los builtins de Java, Go y C#.
+# Para regenerarlo con una versión más nueva:
+git clone --depth 1 --filter=blob:none --sparse https://github.com/github/codeql
+cd codeql && git sparse-checkout set --no-cone '*/ql/lib/ext/**' && cd -
+python scripts/import_codeql_sinks.py ./codeql --write
+
+# Semgrep — HexFlaw NO distribuye sus reglas: su licencia lo prohíbe.
+# Podés importarlas vos desde tu propia copia; el resultado queda en
+# ~/.hexflaw/languages/custom/, fuera del paquete.
+git clone --depth 1 https://github.com/semgrep/semgrep-rules ~/semgrep-rules
+python scripts/import_semgrep_sinks.py ~/semgrep-rules --accept-license
+```
+
+Leé https://semgrep.dev/legal/rules-license antes de usar el segundo: el script
+exige `--accept-license` porque esa decisión es tuya, no nuestra.
+
 #### Ver el code graph
 
 ```bash
