@@ -56,6 +56,9 @@ dev = [
     "pytest-cov>=5.0",
     "mypy>=1.9",
     "ruff>=0.4",
+    "build>=1.2",
+    "twine>=5.0",
+    "python-semantic-release>=10.0",
 ]
 
 [project.urls]
@@ -69,6 +72,36 @@ hexflaw = "hexflaw.cli.main:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["hexflaw"]
+
+[tool.semantic_release]
+# La versión y el CHANGELOG se derivan de los conventional commits: nadie edita
+# 'version' a mano. 'feat' sube minor, 'fix' sube patch, 'BREAKING CHANGE' sube
+# major; los commits 'chore'/'docs'/'test'/'style' no publican nada.
+version_toml = ["pyproject.toml:project.version"]
+commit_parser = "conventional"
+tag_format = "v{version}"
+# major_on_zero = false: en 0.x un 'feat' sube 0.2 → 0.3, no 0.x → 1.0. El salto
+# a 1.0 es una decisión de producto, no algo que dispare un commit.
+major_on_zero = false
+allow_zero_version = true
+build_command = "python -m pip install build && python -m build"
+commit_message = "chore(release): {version}\n\n[skip ci]"
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.changelog]
+mode = "update"
+exclude_commit_patterns = [
+    # Ruido que no le dice nada a quien lee el changelog.
+    '''^chore\(release\):''',
+    '''^Merge (branch|pull request)''',
+]
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+output_format = "md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
