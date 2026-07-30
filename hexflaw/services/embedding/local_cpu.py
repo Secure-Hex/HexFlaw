@@ -56,7 +56,7 @@ class LocalCPUEmbedding(EmbeddingService):
     def _try_load_model(self) -> object | None:
         """Carga perezosa de sentence-transformers si está disponible."""
         try:
-            from sentence_transformers import SentenceTransformer  # type: ignore
+            from sentence_transformers import SentenceTransformer
 
             model = SentenceTransformer(
                 self.model_name, trust_remote_code=self.trust_remote_code
@@ -65,7 +65,7 @@ class LocalCPUEmbedding(EmbeddingService):
             logger.info(
                 "LocalCPUEmbedding usando sentence-transformers (%s)", self.model_name
             )
-            return model
+            return model  # type: ignore[no-any-return]
         except Exception as exc:  # ImportError o descarga fallida → fallback
             logger.info(
                 "Modelo '%s' no cargó (%s); usando fallback por hashing",

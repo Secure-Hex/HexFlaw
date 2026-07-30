@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 
 from hexflaw.infrastructure import config as config_mod
@@ -24,12 +26,12 @@ class _FakeKeyring:
         self.store.pop((service, key), None)
 
 
-def _patch_keyring(monkeypatch, fake: _FakeKeyring | None) -> None:
+def _patch_keyring(monkeypatch: pytest.MonkeyPatch, fake: _FakeKeyring | None) -> None:
     monkeypatch.setattr(secrets_store, "_keyring", lambda: fake)
     monkeypatch.setattr(secrets_store, "available", lambda: fake is not None)
 
 
-def test_set_get_delete_roundtrip(monkeypatch) -> None:
+def test_set_get_delete_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeKeyring()
     _patch_keyring(monkeypatch, fake)
     assert secrets_store.set_secret("anthropic_api_key", "sk-ant-xyz") is True
@@ -38,13 +40,13 @@ def test_set_get_delete_roundtrip(monkeypatch) -> None:
     assert secrets_store.get_secret("anthropic_api_key") is None
 
 
-def test_unavailable_keyring_returns_false(monkeypatch) -> None:
+def test_unavailable_keyring_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_keyring(monkeypatch, None)
     assert secrets_store.set_secret("anthropic_api_key", "x") is False
     assert secrets_store.get_secret("anthropic_api_key") is None
 
 
-def test_save_secret_uses_keyring_not_json(monkeypatch, tmp_path: Path) -> None:
+def test_save_secret_uses_keyring_not_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake = _FakeKeyring()
     _patch_keyring(monkeypatch, fake)
     monkeypatch.setattr(config_mod, "global_home", lambda: tmp_path)
@@ -61,7 +63,7 @@ def test_save_secret_uses_keyring_not_json(monkeypatch, tmp_path: Path) -> None:
     assert cfg.values.get("anthropic_api_key") == "sk-ant-secret"
 
 
-def test_save_secret_falls_back_to_json(monkeypatch, tmp_path: Path) -> None:
+def test_save_secret_falls_back_to_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _patch_keyring(monkeypatch, None)  # sin keyring
     monkeypatch.setattr(config_mod, "global_home", lambda: tmp_path)
 
@@ -70,7 +72,7 @@ def test_save_secret_falls_back_to_json(monkeypatch, tmp_path: Path) -> None:
     assert "sk-ant-fallback" in (tmp_path / "config.json").read_text()
 
 
-def test_save_secret_strips_existing_plaintext(monkeypatch, tmp_path: Path) -> None:
+def test_save_secret_strips_existing_plaintext(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Si había una copia en texto plano, al pasar al keyring se borra del JSON."""
     monkeypatch.setattr(config_mod, "global_home", lambda: tmp_path)
     # Estado heredado: key en texto plano.

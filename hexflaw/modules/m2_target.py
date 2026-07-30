@@ -12,6 +12,7 @@ determinístico. Ambos modos devuelven :class:`TargetDefinition` con su ``mode``
 
 from __future__ import annotations
 
+from typing import Any
 import json
 
 from hexflaw.core.models import EntryPoint, IngestionResult, TargetDefinition
@@ -133,7 +134,7 @@ def define_target_discovery(
     )
 
 
-def _parse_discovery(text: str) -> dict | None:
+def _parse_discovery(text: str) -> dict[str, Any] | None:
     """Extrae el JSON de la propuesta de discovery, tolerante a ruido."""
     from hexflaw.modules.m4_static import _extract_json_object
 

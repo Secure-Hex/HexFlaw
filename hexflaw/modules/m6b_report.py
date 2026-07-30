@@ -75,7 +75,7 @@ def _try_render_pdf(markdown_body: str, out_path: Path) -> Path | None:
         La ruta del PDF, o ``None`` si weasyprint no está instalado o falla.
     """
     try:
-        from weasyprint import HTML  # type: ignore
+        from weasyprint import HTML
     except ImportError:
         logger.warning("weasyprint no instalado; se omite el PDF (usar pip install weasyprint)")
         return None

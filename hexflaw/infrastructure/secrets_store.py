@@ -28,7 +28,7 @@ SECRET_KEYS = ("anthropic_api_key", "voyage_api_key", "openai_api_key")
 def _keyring() -> Any:
     """Importa ``keyring`` de forma perezosa; ``None`` si no está instalada."""
     try:
-        import keyring  # type: ignore
+        import keyring
     except ImportError:
         return None
     return keyring
@@ -45,7 +45,7 @@ def available() -> bool:
         return False
     try:
         backend = kr.get_keyring()
-        from keyring.backends.fail import Keyring as FailKeyring  # type: ignore
+        from keyring.backends.fail import Keyring as FailKeyring
 
         return not isinstance(backend, FailKeyring)
     except Exception as exc:  # backend mal configurado / sin D-Bus / etc.

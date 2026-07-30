@@ -11,6 +11,7 @@ en M6b/M6c; aquí se conserva el código tal cual para el análisis del LLM.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from hexflaw.core.model_policy import Task, choose_model
 from hexflaw.core.models import (
@@ -126,7 +127,7 @@ def _affected_lines(finding: Finding) -> list[str]:
     return lines
 
 
-def _parse(text: str) -> dict:
+def _parse(text: str) -> dict[str, Any]:
     candidate = _extract_json_object(text)
     if candidate is None:
         return {}

@@ -22,6 +22,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -44,11 +45,11 @@ def _queue_dir() -> Path:
     return Path(raw).expanduser()
 
 
-def _pending_requests(queue: Path) -> list[dict]:
+def _pending_requests(queue: Path) -> list[dict[str, Any]]:
     """Lista los requests sin respuesta aún, ordenados por antigüedad."""
     if not queue.exists():
         return []
-    pending: list[dict] = []
+    pending: list[dict[str, Any]] = []
     for req_path in sorted(queue.glob("req-*.json")):
         req_id = req_path.stem[len("req-"):]
         if (queue / f"res-{req_id}.json").exists():
@@ -171,7 +172,7 @@ def answer(
         raise typer.Exit(code=1)
 
     # Acepta tanto un JSON {text, input_tokens?, output_tokens?} como texto plano.
-    payload: dict
+    payload: dict[str, Any]
     try:
         parsed = json.loads(raw)
         payload = parsed if isinstance(parsed, dict) and "text" in parsed else {"text": raw}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import json
 import threading
 import time
@@ -28,7 +30,7 @@ def test_factory_builds_agent_backend(tmp_path: Path) -> None:
 
 def test_roundtrip_parks_request_and_consumes_response(tmp_path: Path) -> None:
     svc = AgentQueueLLMService(queue_dir=str(tmp_path), poll_timeout=5, poll_interval=0.05)
-    result: dict = {}
+    result: dict[str, Any] = {}
 
     def run() -> None:
         result["resp"] = svc.analyze_code(

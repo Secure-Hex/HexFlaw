@@ -8,17 +8,20 @@ import pytest
 
 from hexflaw.services import sink_learner
 from hexflaw.services.language_service import LanguageService
-from hexflaw.services.llm_service import LLMResponse, LLMServiceError
+from hexflaw.services.llm_service import LLMResponse, LLMService, LLMServiceError
 
 
-class _FakeLLM:
+class _FakeLLM(LLMService):
     """LLM falso que devuelve un texto fijo (no toca la red)."""
 
     def __init__(self, text: str) -> None:
+        super().__init__(api_key="fake")
         self._text = text
         self.calls = 0
 
-    def analyze_code(self, instruction: str, code: str, *, model=None) -> LLMResponse:
+    def analyze_code(
+        self, instruction: str, code: str, *, model: str | None = None, **kwargs: object
+    ) -> LLMResponse:
         self.calls += 1
         return LLMResponse(text=self._text, model="fake")
 
@@ -42,12 +45,16 @@ def test_learn_sinks_parses_normalizes_and_persists(isolated_home: Path) -> None
     assert "eval(" in merged
     # persistido como custom y el caché in-memory refrescado
     assert ls.is_custom("typescript")
-    assert set(ls.get("typescript").sink_patterns) == set(merged)
+    definition = ls.get("typescript")
+    assert definition is not None
+    assert set(definition.sink_patterns) == set(merged)
 
 
 def test_learn_sinks_merges_with_existing_builtin(isolated_home: Path) -> None:
     ls = LanguageService()
-    prior = set(ls.get("typescript").sink_patterns)
+    builtin = ls.get("typescript")
+    assert builtin is not None
+    prior = set(builtin.sink_patterns)
     assert prior  # el builtin TS ya trae algunos sinks
 
     llm = _FakeLLM('{"sink_patterns": ["brand_new_sink("]}')

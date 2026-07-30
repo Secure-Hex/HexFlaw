@@ -20,7 +20,7 @@ class FakeLLM(LLMService):
         super().__init__(api_key="fake")
         self.calls = 0
 
-    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:  # type: ignore[override]
+    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:
         self.calls += 1
         payload = (
             '{"findings": [{"type": "command_injection", "file": "ping.c", '

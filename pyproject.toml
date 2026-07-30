@@ -54,8 +54,41 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Directorios de herramientas de agentes vendorizadas en el repo: no son código
+# del proyecto y no siguen su estilo.
+extend-exclude = [".agents", ".atl", ".claude", ".kilocode", ".qwen", "benchmarks/vendor"]
 
 [tool.mypy]
-python_version = "3.11"
+# Sin 'python_version': mypy usa el intérprete con el que corre. Pinearlo en 3.11
+# rompe con dependencias transitivas modernas (numpy 2.5 ya no soporta 3.11 y sus
+# stubs usan sintaxis 3.12, error de parseo que ningún override silencia). La
+# compatibilidad con 3.11 se valida corriendo la suite en un env 3.11, no acá.
 strict = true
 warn_unused_ignores = true
+# El plugin de pydantic entiende 'populate_by_name': sin él, construir un modelo
+# por nombre de campo cuando existe un alias (GraphEdge(from_=...)) da falso error.
+plugins = ["pydantic.mypy"]
+# tests/fixtures/ son codebases de juguete para analizar, no código a type-checkear.
+exclude = ["^\\.(agents|atl|claude|kilocode|qwen)/", "^benchmarks/vendor/", "^tests/fixtures/"]
+
+# Extras opcionales sin stubs: el type-check no debe fallar cuando el extra no
+# está instalado (es justamente lo que pasa en CI sin '.[tui]').
+[[tool.mypy.overrides]]
+module = ["textual.*", "tree_sitter_language_pack.*", "weasyprint.*", "keyring.*", "openai.*"]
+ignore_missing_imports = true
+
+# El TUI hereda de clases de textual (extra opcional 'tui'). Sin el paquete
+# instalado esas bases son Any, y de eso no se sale anotando: hay que permitir
+# heredar de Any y usar sus decoradores. El resto del strict sigue vigente acá.
+[[tool.mypy.overrides]]
+module = ["hexflaw.tui.*"]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
+
+# Librerías pesadas que sí están instaladas pero cuyos stubs no nos interesan:
+# hexflaw no importa numpy y sus stubs exigen python_version >= 3.12, mientras el
+# proyecto declara soporte 3.11. Se saltea el seguimiento, no se relaja el strict.
+[[tool.mypy.overrides]]
+module = ["sentence_transformers.*", "numpy.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
