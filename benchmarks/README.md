@@ -9,6 +9,45 @@ son directamente comparables con Semgrep, CodeQL, Bandit, etc.
 categorías CWE. Estándar de facto para medir SAST. Fuente:
 https://github.com/OWASP-Benchmark/BenchmarkJava
 
+### Recall del prefiltro (gratis, sin LLM)
+
+El techo de recall del pipeline se puede medir **sin gastar un token**: M3 y las 4
+capas del prefiltro no usan LLM. Un testcase cuyo chunk vulnerable no sobrevive al
+prefiltro es un falso negativo garantizado, por bueno que sea el modelo.
+
+```bash
+python benchmarks/owasp/prefilter_recall.py                    # corpus completo
+python benchmarks/owasp/prefilter_recall.py --no-semantic      # aísla capas 0-2
+python benchmarks/owasp/prefilter_recall.py --max-rescued 25   # el default real
+```
+
+**Resultado sobre los 2740 testcases (2026-07-30):**
+
+| Configuración | Recall | Chunks al LLM |
+|---|---|---|
+| Capas 0-2 | 89,3% | 4466 |
+| + capa 3, tope 25 (default de producción) | 89,6% | 4491 |
+| + capa 3 sin tope (techo del método) | **100%** | 8810 |
+
+Dos conclusiones incómodas y accionables:
+
+1. **El tope por defecto de la capa 3 (25) aporta +0,3 puntos** en un corpus de este
+   tamaño. Es un valor absoluto sobre un corpus de 13.691 chunks: el rescate
+   semántico funciona (llega al 100% sin tope) pero el tope lo anula. Debería
+   escalar con el tamaño del corpus, no ser una constante.
+2. **Los 147 fallos se concentran en dos categorías**, y la causa es de cobertura,
+   no del método:
+
+   | Categoría | Recall | ¿En el `vuln_profile` de Java? |
+   |---|---|---|
+   | `xss` | 53,3% | **NO** |
+   | `trustbound` | 55,4% | **NO** |
+   | las otras 9 | 100% | — |
+
+   El XSS de servlet Java (`response.getWriter().format(param)`) no matchea ninguna
+   keyword: la lista de `xss` es toda de idioms JS/PHP (`innerhtml`, `echo`,
+   `|safe`). Y `xss` ni siquiera está en el `vuln_profile` de `java.json`.
+
 ### Layout
 
 ```
