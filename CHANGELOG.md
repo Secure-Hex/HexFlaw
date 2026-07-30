@@ -21,6 +21,14 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.4.0 (2026-07-30)
+
+### Features
+
+- **m4**: Rescue semantically similar chunks as the prefilter's last net
+  ([`5c86661`](https://github.com/Secure-Hex/HexFlaw/commit/5c86661d900fa447a26a07ab40ae9d6e4a20285b))
+
+
 ## v1.3.0 (2026-07-30)
 
 ### Features
