@@ -107,6 +107,65 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "variant_min_similarity": 0.78,  # umbral coseno para considerar un vecino
     "variant_max_total": 50,  # tope duro de variantes exploradas
     "variant_max_rounds": 5,  # tope duro de rondas iterativas
+    # Perfil de calibración activo. Expande el bundle de knobs de :data:`PROFILES`;
+    # cualquier clave puesta a mano le gana (ver 'resolve_config').
+    "profile": "audit",
+}
+
+
+#: Perfiles de calibración. Las perillas de HexFlaw —auto-learn de sinks, rescate
+#: semántico, exhaustive, caza de variantes— son potentes por separado, pero
+#: elegirlas de a una obliga a entender el pipeline entero para arrancar un
+#: análisis. Cada perfil es una respuesta completa a una pregunta distinta:
+#:
+#: - ``fast``: "¿hay algo obvio acá?" Triage barato, sin las capas difusas.
+#: - ``audit``: el default. Cobertura razonable a costo acotado.
+#: - ``paranoid``: "no quiero perderme nada". Analiza todo con el modelo más
+#:   capaz; es el más lento y el más caro, a propósito.
+#:
+#: Lo que un perfil aporta es un DEFAULT, nunca una imposición: cualquier flag
+#: explícito o clave en el config.json le gana en su misma capa de precedencia.
+PROFILES: dict[str, dict[str, Any]] = {
+    "fast": {
+        "analysis_mode": "economy",
+        "token_budget": 300_000,
+        "scope_max_chunks": 100,
+        # Las dos capas difusas del prefiltro se apagan: son las que más chunks
+        # agregan y las que peor razón auditable dejan. En triage se prefiere
+        # perder un hallazgo dudoso antes que pagar por revisarlo.
+        "m4_semantic_rescue_threshold": 2.0,  # > 1.0 => imposible de alcanzar
+        "m4_sink_rescue_hops": 1,
+        "auto_learn_sinks": False,
+        "variant_hunting": False,
+        "exhaustive": False,
+    },
+    "audit": {
+        "analysis_mode": "balanced",
+        "token_budget": 1_500_000,
+        "scope_max_chunks": 200,
+        "m4_semantic_rescue_threshold": 0.22,
+        "m4_semantic_rescue_fraction": 0.10,
+        "m4_sink_rescue_hops": 2,
+        "auto_learn_sinks": True,
+        "variant_hunting": True,
+        "exhaustive": False,
+    },
+    "paranoid": {
+        "analysis_mode": "thorough",
+        "token_budget": 5_000_000,
+        # Sin prefiltro de sinks, sin tope de scope y sin dedup near: en este perfil
+        # el criterio es que un falso negativo cuesta más que la factura.
+        "exhaustive": True,
+        "scope_max_chunks": 1_000_000,
+        "m4_near_dedup_threshold": 2.0,
+        "m4_semantic_rescue_threshold": 0.15,
+        "m4_semantic_rescue_fraction": 0.25,
+        "m4_sink_rescue_hops": 3,
+        "auto_learn_sinks": True,
+        "variant_hunting": True,
+        "variant_max_total": 100,
+        "variant_max_rounds": 8,
+    },
 }
 
 
@@ -174,6 +233,30 @@ def load_local_config(project_dir: Path) -> dict[str, Any]:
         return {}
 
 
+def _apply_layer(merged: dict[str, Any], layer: dict[str, Any]) -> None:
+    """Aplica una capa de configuración expandiendo su perfil primero.
+
+    El perfil se expande **dentro de la capa que lo declara**, no una sola vez al
+    principio. Sin eso, un ``--profile paranoid`` en la CLI perdería contra un
+    ``scope_max_chunks`` viejo del config global, y pedir el perfil más agresivo
+    quedaría capado en silencio por una preferencia que el usuario ya olvidó.
+    Dentro de la misma capa, lo escrito a mano siempre le gana al perfil.
+
+    Args:
+        merged: Config acumulada, modificada in-place.
+        layer: Capa a aplicar (global, local u overrides de CLI).
+    """
+    name = layer.get("profile")
+    if name:
+        settings = PROFILES.get(str(name))
+        if settings is None:
+            raise ValueError(
+                f"Perfil desconocido: '{name}'. Opciones: {', '.join(sorted(PROFILES))}"
+            )
+        merged.update(settings)
+    merged.update(layer)
+
+
 def resolve_config(
     project_dir: Path | None = None,
     overrides: dict[str, Any] | None = None,
@@ -190,22 +273,23 @@ def resolve_config(
     """
     merged: dict[str, Any] = dict(DEFAULT_CONFIG)
     sources = ["defaults"]
+    _apply_layer(merged, {"profile": DEFAULT_CONFIG["profile"]})
 
     global_cfg = load_global_config()
     if global_cfg:
-        merged.update(global_cfg)
+        _apply_layer(merged, global_cfg)
         sources.append("global")
 
     if project_dir is not None:
         local_cfg = load_local_config(project_dir)
         if local_cfg:
-            merged.update(local_cfg)
+            _apply_layer(merged, local_cfg)
             sources.append("local")
 
     if overrides:
         clean = {k: v for k, v in overrides.items() if v is not None}
         if clean:
-            merged.update(clean)
+            _apply_layer(merged, clean)
             sources.append("cli-override")
 
     # API keys: el entorno tiene prioridad sobre lo persistido (mejor higiene).

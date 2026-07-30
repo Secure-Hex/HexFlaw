@@ -19,6 +19,11 @@ def config_command(
     ),
     api_key: str = typer.Option(None, "--api-key", help="Anthropic API key (global)."),
     token_budget: int = typer.Option(None, "--token-budget", help="Budget de tokens."),
+    profile: str = typer.Option(
+        None,
+        "--profile",
+        help="Perfil de calibración por defecto: fast | audit | paranoid.",
+    ),
 ) -> None:
     """Gestiona la configuración global de HexFlaw.
 
@@ -29,6 +34,14 @@ def config_command(
         updates["embedding_backend"] = embedding_backend
     if token_budget is not None:
         updates["token_budget"] = token_budget
+    if profile is not None:
+        if profile not in config_mod.PROFILES:
+            console.error(
+                f"Perfil desconocido: '{profile}'. "
+                f"Opciones: {', '.join(sorted(config_mod.PROFILES))}"
+            )
+            raise typer.Exit(code=1)
+        updates["profile"] = profile
 
     if updates or api_key is not None:
         if updates:

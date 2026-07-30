@@ -27,8 +27,14 @@ def analyze_command(
         "--path",
         help="Prioriza chunks bajo estas rutas (plus, no filtro duro). Repetible.",
     ),
+    profile: str = typer.Option(
+        None,
+        "--profile",
+        help="fast | audit | paranoid. Calibra qué tan agresivo es el análisis "
+        "(default: audit). Cualquier otro flag le gana.",
+    ),
     mode: str = typer.Option(
-        None, "--mode", help="thorough | balanced | economy (override)."
+        None, "--mode", help="thorough | balanced | economy (override fino del perfil)."
     ),
     budget: int = typer.Option(
         None, "--budget", help="Budget de tokens máximo para este análisis."
@@ -46,12 +52,14 @@ def analyze_command(
     exhaustive: bool = typer.Option(
         False,
         "--exhaustive",
-        help="Máxima cobertura: analiza TODO el codebase (sin prefiltro de sinks, sin "
-        "límite de scope, sin dedup) con Opus en todas las tareas. El más lento y caro.",
+        help="Atajo de '--profile paranoid': analiza TODO el codebase (sin prefiltro "
+        "de sinks, sin límite de scope, sin dedup) con Opus en todas las tareas.",
     ),
 ) -> None:
     """Ejecuta el análisis estático preliminar y persiste los hallazgos."""
     overrides: dict[str, object] = {}
+    if profile:
+        overrides["profile"] = profile
     if mode:
         overrides["analysis_mode"] = mode
     if budget is not None:
@@ -61,11 +69,9 @@ def analyze_command(
     if hunt_variants is not None:
         overrides["variant_hunting"] = hunt_variants
     if exhaustive:
-        # Preset agresivo: nada se descarta antes del LLM y se usa Opus en todo.
-        overrides["exhaustive"] = True
-        overrides.setdefault("analysis_mode", "thorough")
-        overrides["scope_max_chunks"] = 1_000_000  # efectivamente sin límite
-        overrides["m4_near_dedup_threshold"] = 2.0  # desactiva dedup near
+        # Es exactamente el perfil paranoid: se expresa así para no tener dos
+        # definiciones del mismo preset que puedan divergir con el tiempo.
+        overrides["profile"] = "paranoid"
     effective = overrides or None
     boost_paths = _parse_paths(path)
 

@@ -194,7 +194,7 @@ findings/ + reports/ + poc/
 | `setup` | Perfila el sistema (M0), recomienda backend y materializa los builtins de lenguaje (444) | `--reprofile`, `--yes` |
 | `init` | Inicializa el proyecto en el CWD | `--name` |
 | `ingest <fuente>` | Ingesta el código (M1). La fuente puede ser **directorio, `.zip`, URL git o URL http(s)** | `--incremental` |
-| `analyze` | Pipeline M2→M5 | `--target`, `--path`, `--mode`, `--budget` |
+| `analyze` | Pipeline M2→M5 | `--profile`, `--target`, `--path`, `--mode`, `--budget` |
 | `report` | Reportes de confirmados (M6a→M6b) | `--format markdown\|pdf\|json\|sarif` |
 | `poc` | PoCs de confirmados (M6a→M6c) | — |
 | `run <fuente>` | Pipeline completo de una vez (acepta directorio/zip/git/url) | `--target`, `--format markdown\|pdf\|json\|sarif` |
@@ -230,6 +230,59 @@ findings/ + reports/ + poc/
   vecinos en el espacio de embeddings y los re-analiza aunque el scope los hubiera
   descartado. Sirve para el patrón "el mismo bug copiado en cinco endpoints". Activo
   por defecto, salvo en `--mode economy` o `--exhaustive` (ahí ya se analizó todo).
+
+#### Perfiles de calibración
+
+Las perillas de arriba son potentes por separado, pero elegirlas de a una obliga a
+entender el pipeline entero antes de arrancar. `--profile` agrupa las decisiones en
+tres respuestas completas a tres preguntas distintas:
+
+```bash
+hexflaw analyze --profile fast       # ¿hay algo obvio acá?
+hexflaw analyze                      # audit — el default
+hexflaw analyze --profile paranoid   # no quiero perderme nada
+```
+
+| Perilla | `fast` | `audit` (default) | `paranoid` |
+|---|---|---|---|
+| Modelos (`analysis_mode`) | economy | balanced | thorough |
+| Budget de tokens | 300k | 1.5M | 5M |
+| Chunks máximos en scope | 100 | 200 | sin límite |
+| Rescate por grafo (saltos) | 1 | 2 | 3 |
+| Rescate semántico | apagado | 0.22 | 0.15 (más permisivo) |
+| Auto-learn de sinks | no | sí | sí |
+| Caza de variantes (M5b) | no | sí | sí, con topes al doble |
+| Analiza todo el codebase | no | no | sí |
+
+`--exhaustive` es exactamente `--profile paranoid`. Y un perfil aporta **defaults**:
+cualquier flag explícito le gana, así que `--profile paranoid --budget 500000` corre
+paranoid con tu techo de tokens. El perfil por defecto de todos tus proyectos se fija
+con `hexflaw config --profile fast`.
+
+#### Frameworks reconocidos
+
+Saber que un archivo es Python no dice mucho: `def index(self)` es una función más,
+salvo que el proyecto sea Django, donde es un endpoint que cualquiera alcanza. El
+lenguaje define la sintaxis; el **framework** define qué entra desde afuera y qué sale
+hacia un intérprete.
+
+HexFlaw detecta el framework por marcadores en el propio código y aplica sus patrones
+solo a ese proyecto:
+
+| Lenguaje | Frameworks |
+|---|---|
+| Python | Flask, FastAPI, Django |
+| JavaScript / TypeScript | Express, NestJS, Next.js |
+| Java / Kotlin | Spring, Spring Boot |
+| Ruby | Rails |
+| PHP | Laravel |
+
+Lo que más rinde no son los sinks, son las **fuentes**: un handler HTTP no recibe
+parámetros, lee de `request`. Sin conocerlas, nada queda marcado como controlable por
+el atacante y el flujo hacia el sink nunca se dibuja. Sus sanitizadores evitan el error
+inverso — reportar como crudo un dato que sí pasó por `escape()`.
+
+Se agregan definiciones nuevas en `hexflaw/infrastructure/frameworks/*.json`.
 
 #### Ampliar el catálogo de sinks
 
@@ -770,6 +823,36 @@ significa "todavía no evaluado". Cualquier `needs_review` se re-evalúa puntual
 El estado `conditional` es importante: captura el caso real de "hay una mitigación pero es
 débil/evadible" (ej. una denylist de comandos que no cubre todos los casos). Ni confirmado
 ni descartado: condicionalmente explotable.
+
+#### La traza auditable de cada hallazgo
+
+Un hallazgo que solo dice *qué* y *dónde* obliga a revisarlo entero. Cada uno lleva la
+traza que hace falta antes de aceptarlo, visible en `hexflaw findings show <ID>`:
+
+```
+╭──────────────────── Traza ─────────────────────╮
+│     Evidencia  grafo + LLM                     │
+│        Camino  el DATO llega al sink           │
+│        Source  api.py::handle_request          │
+│          Sink  api.py::run · command_execution │
+│ Sin sanitizar  user                            │
+│       Guardas  if mode == 'admin'              │
+╰────────────────────────────────────────────────╯
+```
+
+El campo que más importa es **Evidencia**, porque separa lo que derivó el grafo —camino,
+variables, sanitizadores, guardas; todo verificable releyendo esas líneas— de lo que
+afirmó el modelo:
+
+| Evidencia | Qué significa |
+|---|---|
+| `determinístico (grafo)` | Sale del AST. Se comprueba leyendo el código. |
+| `grafo + LLM` | El grafo encontró el camino, el modelo concluyó sobre él. |
+| `solo LLM — verificar a mano` | No hay camino en el grafo; la conclusión es del modelo. |
+
+Y **Camino** aclara qué probó ese camino: `el DATO llega al sink` (flujo de datos) no es
+lo mismo que `el sink es alcanzable` (solo llamadas). Un reporte que mezcla las dos cosas
+obliga a desconfiar de todo por igual.
 
 ### 4.9 M6 — Documentación: root cause, reportes y PoC
 
