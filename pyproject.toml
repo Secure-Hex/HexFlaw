@@ -59,6 +59,7 @@ dev = [
     "build>=1.2",
     "twine>=5.0",
     "python-semantic-release>=10.0",
+    "pyyaml>=6.0",  # scripts/import_codeql_sinks.py
 ]
 
 [project.urls]
@@ -141,7 +142,7 @@ exclude = ["^\\.(agents|atl|claude|kilocode|qwen)/", "^benchmarks/vendor/", "^te
 # Extras opcionales sin stubs: el type-check no debe fallar cuando el extra no
 # está instalado (es justamente lo que pasa en CI sin '.[tui]').
 [[tool.mypy.overrides]]
-module = ["textual.*", "tree_sitter_language_pack.*", "weasyprint.*", "keyring.*", "openai.*"]
+module = ["textual.*", "tree_sitter_language_pack.*", "weasyprint.*", "keyring.*", "openai.*", "yaml.*"]
 ignore_missing_imports = true
 
 # El TUI hereda de clases de textual (extra opcional 'tui'). Sin el paquete

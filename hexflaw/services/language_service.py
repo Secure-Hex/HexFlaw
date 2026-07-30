@@ -48,6 +48,7 @@ _ALLOWED_FIELDS: dict[str, type] = {
     "vuln_profile": list,
     "entry_point_patterns": list,
     "sink_patterns": list,
+    "sink_models": list,
     "notes": str,
 }
 _REQUIRED_FIELDS = ("id", "name", "extensions")
@@ -99,6 +100,12 @@ class LanguageDefinition:
     vuln_profile: list[str] = field(default_factory=list)
     entry_point_patterns: list[str] = field(default_factory=list)
     sink_patterns: list[str] = field(default_factory=list)
+    #: Sinks calificados con su clase de vulnerabilidad ya mapeada:
+    #: ``[["Runtime.exec", "command_execution"], ...]``. A diferencia de
+    #: ``sink_patterns`` (strings sueltos), el nombre incluye el tipo receptor, lo
+    #: que evita que un ``exec`` cualquiera colisione con el de Runtime. Es el
+    #: formato que produce el import de catálogos externos (ver scripts/).
+    sink_models: list[list[str]] = field(default_factory=list)
     tree_sitter_package: str | None = None
     notes: str = ""
 
@@ -129,6 +136,7 @@ class LanguageDefinition:
             vuln_profile=list(data.get("vuln_profile", [])),
             entry_point_patterns=list(data.get("entry_point_patterns", [])),
             sink_patterns=list(data.get("sink_patterns", [])),
+            sink_models=[list(m) for m in data.get("sink_models", [])],
             tree_sitter_package=data.get("tree_sitter_package"),
             notes=str(data.get("notes", "")),
         )

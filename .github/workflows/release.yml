@@ -60,7 +60,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e '.[dev,treesitter]'
       - run: ruff check .
-      - run: mypy hexflaw tests
+      - run: mypy hexflaw tests scripts
       - run: pytest -q
 
   release:

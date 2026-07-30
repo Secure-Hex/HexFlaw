@@ -516,3 +516,71 @@ def test_graph_service_detects_tampering(tmp_path: Path) -> None:
     storage.write_json(service.graph_path, payload)
 
     assert service.load_if_valid(digest) is None  # integridad rota → regenerar
+
+
+# --------------------------------------------------------------------------- #
+# Catálogo de sinks calificados (import de CodeQL)
+# --------------------------------------------------------------------------- #
+def _java_graph(tmp_path: Path, source: str) -> CodeGraph:
+    """Grafo de un único archivo Java."""
+    (tmp_path / "Svc.java").write_text(source, encoding="utf-8")
+    langs = LanguageService()
+    return m3_graph.build_graph(m1_ingestion.ingest(tmp_path, "p", langs), langs)
+
+
+def test_qualified_callee_keeps_the_receiver_type(tmp_path: Path) -> None:
+    """Java expone receptor y método por separado; sin recomponer se pierde el tipo.
+
+    Quedarse con ``exec`` a secas hace indistinguible el de ``Runtime`` de
+    cualquier otro, que es lo que vuelve inservible un catálogo de miles de
+    nombres de método.
+    """
+    graph = _java_graph(
+        tmp_path, "class Svc {\n  void m(String c){ Runtime.getRuntime().exec(c); }\n}"
+    )
+    facts = m3_graph._ts_flow_facts(
+        [c for c in m1_ingestion.ingest(tmp_path, "p", LanguageService()).chunks]
+    )
+    names = {call.name for f in facts.values() for call in f.calls}
+
+    assert "Runtime.exec" in names, f"se perdió el receptor: {names}"
+    assert graph is not None
+
+
+def test_sink_catalog_resolves_the_vulnerability_class(tmp_path: Path) -> None:
+    """El catálogo trae el sink_type ya mapeado, no un 'unknown'."""
+    graph = _java_graph(
+        tmp_path, "class Svc {\n  void m(String c){ Runtime.getRuntime().exec(c); }\n}"
+    )
+    tipos = {s.sink_type for s in graph.sinks}
+
+    assert "command_execution" in tipos, f"tipos detectados: {tipos}"
+
+
+def test_sink_catalog_does_not_flag_inert_code(tmp_path: Path) -> None:
+    """1000+ patrones importados no pueden convertir código inocente en sink.
+
+    Es la condición que hace viable el import: los nombres genéricos se filtran
+    en la importación y el match exige el tipo receptor, no el método suelto.
+    """
+    graph = _java_graph(
+        tmp_path,
+        "class Svc {\n"
+        "  void a(String x, String y){ System.out.println(x.length() + y.length()); }\n"
+        "  void b(java.util.List<String> l){ l.add(\"x\"); l.get(0); }\n"
+        "}",
+    )
+    por_nodo = {n.name: n.is_sink for n in graph.nodes}
+
+    assert por_nodo.get("a") is False
+    assert por_nodo.get("b") is False
+
+
+def test_sink_models_are_optional_and_backward_compatible() -> None:
+    """Una definición sin ``sink_models`` sigue siendo válida."""
+    from hexflaw.services.language_service import LanguageDefinition
+
+    definition = LanguageDefinition.from_dict(
+        {"id": "x", "name": "X", "extensions": [".x"], "sink_patterns": ["system"]}
+    )
+    assert definition.sink_models == []

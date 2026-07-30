@@ -158,9 +158,13 @@ def build_graph(
         sink_patterns = definition.sink_patterns if definition else []
         facts = ast_facts.get(chunk.id)
 
+        catalog: list[tuple[str, str]] = []
         if facts is not None:
             is_entry = _ast_is_entry_point(chunk, facts, entry_patterns)
             matched_sinks = _ast_matched_sinks(chunk, facts, sink_patterns)
+            # Catálogo calificado (import de CodeQL): trae su propio sink_type.
+            if definition is not None and definition.sink_models:
+                catalog = _matched_sink_models(facts, definition.sink_models)
         else:
             is_entry = any(p in chunk.code for p in entry_patterns)
             matched_sinks = [p for p in sink_patterns if p in chunk.code]
@@ -174,7 +178,7 @@ def build_graph(
             line_end=chunk.line_end,
             signature=_first_line(chunk.code),
             is_entry_point=is_entry,
-            is_sink=bool(matched_sinks),
+            is_sink=bool(matched_sinks) or bool(catalog),
             tags=["user_input"] if is_entry else [],
         )
         nodes.append(node)
@@ -189,6 +193,10 @@ def build_graph(
                     sink_type=_SINK_TYPE.get(sink_kw, "unknown"),
                     function=sink_kw,
                 )
+            )
+        for pattern, sink_type in catalog:
+            sinks.append(
+                SinkRef(node_id=chunk.id, sink_type=sink_type, function=pattern)
             )
 
     # Los nodos MODULE van al final: su rango de líneas abarca todo el archivo y
@@ -1193,13 +1201,27 @@ _TS_ARGUMENT_KINDS = ("argument", "call_suffix", "value_arguments")
 
 
 def _ts_callee_name(node: object, source: bytes) -> str:
-    """Nombre del invocado en un nodo de llamada.
+    """Nombre calificado del invocado en un nodo de llamada.
 
-    Primero por campo (``function``/``name``/``method``), que es como lo exponen
-    C, Go, Java, PHP, Ruby, JS/TS, Rust y C#. Kotlin y Swift no exponen ninguno:
-    ahí el invocado es el primer hijo nombrado y los argumentos van en un
-    ``call_suffix`` aparte, así que se cae a ese fallback.
+    Las grammars exponen esto de dos formas distintas:
+
+    - **Path completo en un campo** (``function``): C, Go, JS/TS, Rust, C#, PHP.
+      ``exec.Command``, ``System.Diagnostics.Process.Start`` — se usa tal cual.
+    - **Receptor y método separados** (``object`` + ``name``): Java. Ahí el campo
+      ``name`` solo trae ``exec``, y quedarse con eso pierde de qué tipo es: hay
+      cientos de ``exec``/``connect``/``write`` distintos. Se recompone
+      ``Receptor.metodo`` para poder distinguir ``Runtime.exec`` de otro ``exec``.
+
+    Kotlin y Swift no exponen ninguno de los dos: ahí el invocado es el primer
+    hijo nombrado y los argumentos van en un ``call_suffix`` aparte.
     """
+    method = _ts_field(node, "name")
+    receiver = _ts_field(node, "object") or _ts_field(node, "receiver")
+    if method is not None and receiver is not None:
+        base = _ts_receiver_name(receiver, source)
+        name = _ts_text(method, source).strip()
+        return f"{base}.{name}" if base else name
+
     for field_name in ("function", "name", "method", "constructor"):
         target = _ts_field(node, field_name)
         if target is not None:
@@ -1212,6 +1234,46 @@ def _ts_callee_name(node: object, source: bytes) -> str:
         if text and (text[0].isalpha() or text[0] == "_"):
             return text
     return ""
+
+
+def _ts_receiver_name(node: object, source: bytes) -> str:
+    """Nombre del receptor de una llamada, reducido a algo comparable con un tipo.
+
+    El receptor puede ser una expresión entera —``Runtime.getRuntime()``,
+    ``new File(p)``, ``this``— y lo que interesa para comparar contra un catálogo
+    de sinks es el **tipo**, no la expresión. Se prefiere el primer identificador
+    que empieza en mayúscula (convención de tipos en Java, C# y Kotlin) y, si no
+    hay ninguno, el primero que aparezca.
+
+    Es una heurística: un receptor guardado en una variable en minúscula
+    (``rt.exec(...)`` con ``rt = Runtime.getRuntime()``) devuelve ``rt``, no
+    ``Runtime``. Resolver eso pide inferencia de tipos, que está fuera de alcance.
+    """
+    text = _ts_text(node, source).strip()
+    if text in ("this", "self", "super"):
+        return text
+    identifiers = [
+        _ts_text(child, source)
+        for child in _ts_walk(node)
+        if _ts_kind(child).endswith("identifier") or _ts_kind(child) == "name"
+    ]
+    if not identifiers:
+        return ""
+    for candidate in identifiers:
+        if candidate[:1].isupper():
+            return candidate
+    return identifiers[0]
+
+
+def _ts_walk(node: object) -> list[object]:
+    """Todos los nodos bajo ``node``, en pre-orden."""
+    out: list[object] = []
+    stack = [node]
+    while stack:
+        current = stack.pop(0)
+        out.append(current)
+        stack[:0] = _ts_children(current)
+    return out
 
 
 def _ts_param_names(root: object, source: bytes) -> set[str]:
@@ -1396,6 +1458,34 @@ def _ast_matched_sinks(
         elif (core is None or not facts.precise_calls) and pattern in chunk.code:
             matched.append(pattern)
     return matched
+
+
+def _matched_sink_models(
+    facts: _PyChunkFacts, sink_models: list[list[str]]
+) -> list[tuple[str, str]]:
+    """Sinks del catálogo calificado que matchean alguna llamada del chunk.
+
+    A diferencia de :func:`_ast_matched_sinks`, acá el patrón trae el tipo receptor
+    (``Runtime.exec``) y su clase de vulnerabilidad ya resuelta, así que no hace
+    falta inferir el ``sink_type`` de un mapa global. Se exige que **todos** los
+    segmentos del patrón aparezcan como run en el nombre resuelto: ``Runtime.exec``
+    no matchea un ``exec`` cualquiera, que es justamente el ruido que haría
+    inservible importar miles de nombres de método sueltos.
+
+    Returns:
+        Pares ``(patrón, sink_type)`` sin repetir.
+    """
+    seen: set[tuple[str, str]] = set()
+    for model in sink_models:
+        if len(model) < 2:
+            continue
+        pattern, sink_type = model[0], model[1]
+        core = _call_pattern_core(pattern)
+        if core is None or "." not in core:
+            continue  # sin tipo receptor no aporta sobre sink_patterns
+        if any(_segments_match(core, name) for name in facts.resolved_calls):
+            seen.add((pattern, sink_type))
+    return sorted(seen)
 
 
 def _call_pattern_core(pattern: str) -> str | None:
