@@ -132,19 +132,30 @@ _KIND_TO_NODE: dict[ChunkKind, NodeType] = {
 
 
 def build_graph(
-    ingestion: IngestionResult, languages_service: LanguageService
+    ingestion: IngestionResult,
+    languages_service: LanguageService,
+    taint_patterns: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
 ) -> CodeGraph:
     """Construye el code graph a partir del resultado de ingestión.
 
     Args:
         ingestion: Resultado de M1 (chunks + file_map).
         languages_service: Para resolver entry/sink patterns por lenguaje.
+        taint_patterns: ``{lenguaje: (fuentes, sanitizadores)}`` a sumar a los
+            builtin. Lo llena la detección de frameworks. Las fuentes son la mitad
+            crítica: un handler HTTP no recibe parámetros —lee de ``request``— así
+            que sin ellas nada queda tainted y el flujo hacia el sink no se emite.
+            Los sanitizadores evitan lo inverso: reportar como crudo un dato que
+            pasó por ``escape()``.
 
     Returns:
         El :class:`CodeGraph` construido.
     """
     symbols = _index_ast_symbols(ingestion.chunks)
-    ast_facts = _python_facts(ingestion.chunks, symbols.aliases)
+    py_sources, py_sanitizers = (taint_patterns or {}).get("python", ((), ()))
+    ast_facts = _python_facts(
+        ingestion.chunks, symbols.aliases, py_sources, py_sanitizers
+    )
     ast_facts.update(_ts_flow_facts(ingestion.chunks))
 
     nodes: list[GraphNode] = []
@@ -402,7 +413,10 @@ class _PySymbols:
 
 
 def _python_facts(
-    chunks: list[CodeChunk], aliases_by_file: dict[str, dict[str, str]]
+    chunks: list[CodeChunk],
+    aliases_by_file: dict[str, dict[str, str]],
+    extra_sources: tuple[str, ...] = (),
+    extra_sanitizers: tuple[str, ...] = (),
 ) -> dict[str, _PyChunkFacts]:
     """Parsea cada chunk de Python y extrae sus llamadas y decoradores.
 
@@ -413,6 +427,8 @@ def _python_facts(
     Args:
         chunks: Todos los chunks de la ingestión.
         aliases_by_file: Alias de import por archivo (de :class:`_PySymbols`).
+        extra_sources: Fuentes de dato controlable aportadas por los frameworks.
+        extra_sanitizers: Sanitizadores aportados por los frameworks detectados.
 
     Returns:
         ``{chunk_id: facts}`` solo para los chunks con ruta AST disponible.
@@ -433,7 +449,11 @@ def _python_facts(
         owner = _owner_class(chunk)
         if owner is None:
             continue
-        visitor = _PyFlowVisitor(aliases_by_file.get(chunk.file, {}))
+        visitor = _PyFlowVisitor(
+            aliases_by_file.get(chunk.file, {}),
+            sources=extra_sources,
+            sanitizers=extra_sanitizers,
+        )
         visitor.run(tree)
         fields = {name for name in visitor.tainted if _is_self_attribute(name)}
         if fields:
@@ -445,7 +465,12 @@ def _python_facts(
     for chunk, tree in trees.values():
         owner = _owner_class(chunk)
         seed = attributes_by_class.get((chunk.file, owner or ""), set())
-        visitor = _PyFlowVisitor(aliases_by_file.get(chunk.file, {}), seed_tainted=seed)
+        visitor = _PyFlowVisitor(
+            aliases_by_file.get(chunk.file, {}),
+            seed_tainted=seed,
+            sources=extra_sources,
+            sanitizers=extra_sanitizers,
+        )
         visitor.run(tree)
         facts[chunk.id] = _PyChunkFacts(
             calls=visitor.calls,
@@ -512,9 +537,16 @@ class _PyFlowVisitor(ast.NodeVisitor):
     """
 
     def __init__(
-        self, aliases: dict[str, str], *, seed_tainted: set[str] | None = None
+        self,
+        aliases: dict[str, str],
+        *,
+        seed_tainted: set[str] | None = None,
+        sources: tuple[str, ...] = (),
+        sanitizers: tuple[str, ...] = (),
     ) -> None:
         self.aliases = aliases
+        self.sources = _PY_SOURCES + tuple(s.lower() for s in sources)
+        self.sanitizers = _PY_SANITIZERS + tuple(s.lower() for s in sanitizers)
         self.calls: list[_PyCall] = []
         self._state = _TaintState(tainted=set(seed_tainted or ()))
         self._guards: list[str] = []
@@ -627,11 +659,11 @@ class _PyFlowVisitor(ast.NodeVisitor):
         self.visit(value)
         self._flows_to = previous
 
-        if self._matches(value, _PY_SANITIZERS):
+        if self._matches(value, self.sanitizers):
             # Sanitizado: deja de estar tainted, y se recuerda para marcar la arista.
             self._state.sanitized.update(targets)
             self._state.tainted.difference_update(targets)
-        elif self._names_in(value) & self.tainted or self._matches(value, _PY_SOURCES):
+        elif self._names_in(value) & self.tainted or self._matches(value, self.sources):
             self._state.tainted.update(targets)
             self._state.sanitized.difference_update(targets)
 
@@ -649,7 +681,7 @@ class _PyFlowVisitor(ast.NodeVisitor):
             sanitized_args: set[str] = set()
             for argument in (*node.args, *(kw.value for kw in node.keywords)):
                 names = self._names_in(argument)
-                if self._matches(argument, _PY_SANITIZERS):
+                if self._matches(argument, self.sanitizers):
                     sanitized_args |= names & (self.tainted | self.sanitized)
                 else:
                     tainted_args |= names & self.tainted

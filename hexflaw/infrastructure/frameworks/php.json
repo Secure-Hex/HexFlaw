@@ -1,0 +1,60 @@
+{
+  "frameworks": [
+    {
+      "id": "laravel",
+      "name": "Laravel",
+      "language": "php",
+      "markers": [
+        "Illuminate\\",
+        "use Illuminate",
+        "artisan",
+        "Laravel"
+      ],
+      "entry_point_patterns": [
+        "Route::get",
+        "Route::post",
+        "Route::put",
+        "Route::delete",
+        "Route::any",
+        "public function __invoke",
+        "$request->",
+        "Request $request"
+      ],
+      "sources": [
+        "$request->input",
+        "$request->get",
+        "$request->all",
+        "$request->query",
+        "$_GET",
+        "$_POST",
+        "$_REQUEST"
+      ],
+      "sink_patterns": [
+        "DB::raw",
+        "DB::select",
+        "DB::statement",
+        "whereRaw",
+        "orderByRaw",
+        "havingRaw",
+        "selectRaw",
+        "unserialize",
+        "eval(",
+        "exec(",
+        "shell_exec",
+        "redirect(",
+        "response()->file",
+        "Storage::get",
+        "{!!"
+      ],
+      "sanitizers": [
+        "validate(",
+        "FormRequest",
+        "Gate::",
+        "authorize(",
+        "{{",
+        "e("
+      ],
+      "notes": "{{ }} escapa en Blade; {!! !!} no. whereRaw/DB::raw con input es SQLi aunque Eloquent parametrice el resto. La ausencia de authorize()/Gate en un controller que toca datos ajenos es IDOR."
+    }
+  ]
+}

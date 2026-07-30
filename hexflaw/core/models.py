@@ -200,7 +200,7 @@ class SinkRef(BaseModel):
 #:   2 — resolución por AST (Python ``ast`` + tree-sitter), nodos con
 #:       function/method/class/module, y aristas ``data_flow``/``control_flow``
 #:       con ``data_vars``, ``condition`` y ``sanitized``.
-GRAPH_SCHEMA_VERSION = 2
+GRAPH_SCHEMA_VERSION = 3
 
 
 class CodeGraph(BaseModel):

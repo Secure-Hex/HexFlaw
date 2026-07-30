@@ -1,0 +1,129 @@
+{
+  "frameworks": [
+    {
+      "id": "flask",
+      "name": "Flask",
+      "language": "python",
+      "markers": [
+        "from flask import",
+        "import flask",
+        "Flask(__name__)"
+      ],
+      "entry_point_patterns": [
+        "@app.route",
+        "@bp.route",
+        "@blueprint.route",
+        "request."
+      ],
+      "sources": [
+        "request.args",
+        "request.form",
+        "request.files",
+        "request.cookies",
+        "request.headers",
+        "request.json",
+        "request.data",
+        "request.values"
+      ],
+      "sink_patterns": [
+        "render_template_string",
+        "send_file",
+        "send_from_directory",
+        "make_response",
+        "redirect("
+      ],
+      "sanitizers": [
+        "escape(",
+        "markupsafe.escape",
+        "secure_filename"
+      ],
+      "notes": "request.args/form/files son sources, no sinks: entran acá para que el prefiltro no descarte el handler. render_template_string con input es SSTI."
+    },
+    {
+      "id": "fastapi",
+      "name": "FastAPI",
+      "language": "python",
+      "markers": [
+        "from fastapi import",
+        "FastAPI("
+      ],
+      "entry_point_patterns": [
+        "@app.get",
+        "@app.post",
+        "@app.put",
+        "@app.delete",
+        "@router.get",
+        "@router.post",
+        "@router.put",
+        "@router.delete",
+        "async def"
+      ],
+      "sources": [
+        "Request",
+        "Query",
+        "Body",
+        "Form",
+        "Header",
+        "Cookie",
+        "Path"
+      ],
+      "sink_patterns": [
+        "HTMLResponse",
+        "FileResponse",
+        "RedirectResponse",
+        "PlainTextResponse",
+        "text(",
+        "execute("
+      ],
+      "sanitizers": [
+        "pydantic",
+        "BaseModel",
+        "Field("
+      ],
+      "notes": "Los tipos Pydantic validan forma, no contenido: un str sigue siendo controlable."
+    },
+    {
+      "id": "django",
+      "name": "Django",
+      "language": "python",
+      "markers": [
+        "from django",
+        "django.db",
+        "DJANGO_SETTINGS_MODULE"
+      ],
+      "entry_point_patterns": [
+        "def get(self",
+        "def post(self",
+        "request.",
+        "urlpatterns"
+      ],
+      "sources": [
+        "request.GET",
+        "request.POST",
+        "request.FILES",
+        "request.COOKIES",
+        "request.META",
+        "request.body",
+        "self.kwargs"
+      ],
+      "sink_patterns": [
+        "raw(",
+        "extra(",
+        "RawSQL",
+        "cursor.execute",
+        "mark_safe",
+        "HttpResponse(",
+        "redirect(",
+        "FileResponse",
+        "eval("
+      ],
+      "sanitizers": [
+        "escape(",
+        "conditional_escape",
+        "get_object_or_404",
+        "|escape"
+      ],
+      "notes": "El ORM parametriza; el riesgo está en .raw()/.extra()/RawSQL y en mark_safe, que desactiva el autoescape."
+    }
+  ]
+}

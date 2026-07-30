@@ -1,0 +1,56 @@
+{
+  "frameworks": [
+    {
+      "id": "rails",
+      "name": "Ruby on Rails",
+      "language": "ruby",
+      "markers": [
+        "Rails.application",
+        "ActiveRecord::Base",
+        "ApplicationController",
+        "rails/all"
+      ],
+      "entry_point_patterns": [
+        "def index",
+        "def show",
+        "def create",
+        "def update",
+        "def destroy",
+        "def new",
+        "def edit",
+        "params[",
+        "before_action"
+      ],
+      "sources": [
+        "params[",
+        "request.parameters",
+        "cookies[",
+        "request.headers"
+      ],
+      "sink_patterns": [
+        "find_by_sql",
+        "where(",
+        "execute(",
+        "order(",
+        "pluck(",
+        "html_safe",
+        "raw(",
+        "render inline:",
+        "send(",
+        "constantize",
+        "redirect_to",
+        "send_file",
+        "system(",
+        "eval("
+      ],
+      "sanitizers": [
+        "permit(",
+        "require(",
+        "sanitize(",
+        "ERB::Util.html_escape",
+        "h("
+      ],
+      "notes": "where con string interpolado es SQLi; con hash o placeholders no. html_safe y raw desactivan el escape de ERB. constantize y send sobre params son RCE. permit sin require no filtra: strong parameters solo protege mass-assignment."
+    }
+  ]
+}

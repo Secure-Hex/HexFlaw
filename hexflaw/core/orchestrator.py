@@ -44,7 +44,7 @@ from hexflaw.modules import (
     m6c_poc,
     source_resolver,
 )
-from hexflaw.services import sink_learner
+from hexflaw.services import framework_service, sink_learner
 from hexflaw.services.embedding import EmbeddingService, get_embedding_service
 from hexflaw.services.embedding.caching import CachingEmbeddingService
 from hexflaw.services.graph_service import GraphService
@@ -100,6 +100,8 @@ class Orchestrator:
         #: TargetDefinition del último run (modo M2 + target confirmado), para que
         #: la capa de presentación muestre en qué modo trabajó M2 y qué se analizó.
         self.last_target: TargetDefinition | None = None
+        #: Frameworks detectados en el último run (Flask, Spring, Rails, ...).
+        self.last_frameworks: list[framework_service.FrameworkDefinition] = []
         self.languages = LanguageService()
         self.graphs = GraphService(project.hexflaw_dir)
         self.llm = build_llm_service(config)
@@ -306,6 +308,18 @@ class Orchestrator:
             )
             if overlay:
                 self.languages.apply_overlay(overlay)
+
+        # Framework awareness — ANTES de M3, por el mismo motivo que el auto-learn:
+        # sus patrones deciden qué nodo es entry point y cuál es sink. Saber que el
+        # repo es Django convierte un `def get(self, request)` de método cualquiera
+        # en la puerta por la que entra el atacante.
+        self.last_frameworks = framework_service.detect(ingestion.chunks)
+        if self.last_frameworks:
+            fw_sinks, fw_entries = framework_service.overlays(self.last_frameworks)
+            self.languages.apply_overlay(fw_sinks, fw_entries)
+            self._set_detail(
+                "Frameworks: " + ", ".join(f.name for f in self.last_frameworks)
+            )
 
         self._begin_phase("M3 · code graph")
         graph = self._build_or_load_graph(ingestion)
@@ -603,7 +617,11 @@ class Orchestrator:
         cached = self.graphs.load_if_valid(digest)
         if cached is not None:
             return cached
-        graph = m3_graph.build_graph(ingestion, self.languages)
+        taint = {
+            language: framework_service.taint_patterns(self.last_frameworks, language)
+            for language in ingestion.languages
+        }
+        graph = m3_graph.build_graph(ingestion, self.languages, taint)
         self.graphs.save(graph, digest)
         return graph
 

@@ -260,8 +260,12 @@ class LanguageService:
         """Obtiene la definición activa de un lenguaje por su ``id``."""
         return self._by_id.get(language_id)
 
-    def apply_overlay(self, overlay: dict[str, list[str]]) -> None:
-        """Suma ``sink_patterns`` aprendidos **solo para esta sesión/proyecto**.
+    def apply_overlay(
+        self,
+        overlay: dict[str, list[str]],
+        entry_points: dict[str, list[str]] | None = None,
+    ) -> None:
+        """Suma patrones **solo para esta sesión/proyecto**.
 
         Los sinks que se aprenden del código de un proyecto son de ese proyecto: un
         helper llamado ``run_cmd`` en un cliente no debería marcar nada en el
@@ -275,19 +279,33 @@ class LanguageService:
 
         Args:
             overlay: ``{language_id: [sink_pattern, ...]}`` a sumar a lo existente.
+            entry_points: ``{language_id: [entry_pattern, ...]}``, opcional. Lo usa
+                la detección de frameworks: un ``@app.route`` no es un sink, es la
+                puerta por donde entra el dato, y sin marcarla M5 no tiene desde
+                dónde remontar el taint.
         """
-        for language_id, patterns in overlay.items():
+        for language_id in set(overlay) | set(entry_points or {}):
             definition = self._by_id.get(language_id)
-            if definition is None or not patterns:
+            if definition is None:
                 continue
-            merged = sorted({p.lower() for p in definition.sink_patterns} | set(patterns))
-            self._by_id[language_id] = replace(definition, sink_patterns=merged)
+            new_sinks = overlay.get(language_id, [])
+            new_entries = (entry_points or {}).get(language_id, [])
+            if not new_sinks and not new_entries:
+                continue
+            merged = sorted({p.lower() for p in definition.sink_patterns} | set(new_sinks))
+            merged_entries = sorted(set(definition.entry_point_patterns) | set(new_entries))
+            self._by_id[language_id] = replace(
+                definition,
+                sink_patterns=merged,
+                entry_point_patterns=merged_entries,
+            )
             for extension in definition.extensions:
                 self._by_ext[extension] = self._by_id[language_id]
             logger.info(
-                "Overlay de sinks para '%s': +%d patrones aprendidos del proyecto",
+                "Overlay para '%s': +%d sinks, +%d entry points",
                 language_id,
                 len(merged) - len(definition.sink_patterns),
+                len(merged_entries) - len(definition.entry_point_patterns),
             )
 
     def known_languages(self) -> list[str]:

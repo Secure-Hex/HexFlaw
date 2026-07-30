@@ -1,0 +1,64 @@
+{
+  "frameworks": [
+    {
+      "id": "spring",
+      "name": "Spring / Spring Boot",
+      "language": "java",
+      "also_languages": [
+        "kotlin"
+      ],
+      "markers": [
+        "org.springframework",
+        "@SpringBootApplication",
+        "@RestController",
+        "@Controller"
+      ],
+      "entry_point_patterns": [
+        "@RequestMapping",
+        "@GetMapping",
+        "@PostMapping",
+        "@PutMapping",
+        "@DeleteMapping",
+        "@PatchMapping",
+        "@RequestParam",
+        "@PathVariable",
+        "@RequestBody",
+        "@RequestHeader",
+        "@ModelAttribute"
+      ],
+      "sources": [
+        "@RequestParam",
+        "@PathVariable",
+        "@RequestBody",
+        "@RequestHeader",
+        "getParameter",
+        "getHeader",
+        "getCookies"
+      ],
+      "sink_patterns": [
+        "jdbcTemplate.query",
+        "jdbcTemplate.update",
+        "jdbcTemplate.execute",
+        "createQuery",
+        "createNativeQuery",
+        "entityManager.createQuery",
+        "RestTemplate",
+        "WebClient",
+        "new RedirectView",
+        "redirect:",
+        "ResponseEntity",
+        "SpelExpressionParser",
+        "parseExpression"
+      ],
+      "sanitizers": [
+        "@Valid",
+        "@Validated",
+        "setParameter",
+        "PreparedStatement",
+        "HtmlUtils.htmlEscape",
+        "@PreAuthorize"
+      ],
+      "notes": "createQuery con concatenación es HQL injection aunque haya JPA. SpEL parseExpression sobre input es RCE. La ausencia de @PreAuthorize en un endpoint sensible es el hallazgo, no su presencia."
+    }
+  ]
+}

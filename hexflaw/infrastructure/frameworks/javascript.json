@@ -1,0 +1,148 @@
+{
+  "frameworks": [
+    {
+      "id": "express",
+      "name": "Express",
+      "language": "javascript",
+      "also_languages": [
+        "typescript"
+      ],
+      "markers": [
+        "require('express')",
+        "require(\"express\")",
+        "from 'express'",
+        "express()"
+      ],
+      "entry_point_patterns": [
+        "app.get(",
+        "app.post(",
+        "app.put(",
+        "app.delete(",
+        "app.use(",
+        "router.get(",
+        "router.post(",
+        "router.put(",
+        "router.delete(",
+        "req.params",
+        "req.query",
+        "req.body"
+      ],
+      "sources": [
+        "req.query",
+        "req.body",
+        "req.params",
+        "req.headers",
+        "req.cookies"
+      ],
+      "sink_patterns": [
+        "res.send",
+        "res.write",
+        "res.redirect",
+        "res.sendFile",
+        "res.render",
+        "res.json",
+        "res.set(",
+        "res.cookie"
+      ],
+      "sanitizers": [
+        "escapeHtml",
+        "sanitize-html",
+        "validator.escape",
+        "path.normalize"
+      ],
+      "notes": "res.redirect con input es open redirect; res.sendFile con path del usuario es traversal. helmet no sanitiza salida."
+    },
+    {
+      "id": "nestjs",
+      "name": "NestJS",
+      "language": "typescript",
+      "also_languages": [
+        "javascript"
+      ],
+      "markers": [
+        "@nestjs/common",
+        "@nestjs/core",
+        "@Controller("
+      ],
+      "entry_point_patterns": [
+        "@Get(",
+        "@Post(",
+        "@Put(",
+        "@Delete(",
+        "@Patch(",
+        "@Body(",
+        "@Query(",
+        "@Param(",
+        "@Req(",
+        "@Headers("
+      ],
+      "sources": [
+        "@Body",
+        "@Query",
+        "@Param",
+        "@Req",
+        "@Headers"
+      ],
+      "sink_patterns": [
+        "query(",
+        "createQueryBuilder",
+        "getRawMany",
+        "getRawOne",
+        "$queryRawUnsafe",
+        "$executeRawUnsafe",
+        "exec("
+      ],
+      "sanitizers": [
+        "ValidationPipe",
+        "class-validator",
+        "ParseIntPipe",
+        "@IsInt",
+        "@IsUUID"
+      ],
+      "notes": "Sin ValidationPipe global un DTO tipado NO valida en runtime. Los guards (@UseGuards) definen la autorización: su ausencia en una ruta es el hallazgo."
+    },
+    {
+      "id": "nextjs",
+      "name": "Next.js",
+      "language": "typescript",
+      "also_languages": [
+        "javascript"
+      ],
+      "markers": [
+        "next/server",
+        "next/navigation",
+        "from 'next'",
+        "'use server'"
+      ],
+      "entry_point_patterns": [
+        "export async function GET",
+        "export async function POST",
+        "export async function PUT",
+        "export async function DELETE",
+        "export default async function handler",
+        "'use server'",
+        "searchParams"
+      ],
+      "sources": [
+        "searchParams",
+        "req.nextUrl",
+        "formData",
+        "params"
+      ],
+      "sink_patterns": [
+        "dangerouslySetInnerHTML",
+        "redirect(",
+        "NextResponse.redirect",
+        "revalidatePath",
+        "cookies().set",
+        "headers()"
+      ],
+      "sanitizers": [
+        "DOMPurify",
+        "zod",
+        "safeParse"
+      ],
+      "notes": "Las server actions ('use server') son endpoints HTTP públicos aunque parezcan funciones internas: cualquiera puede invocarlas, la autorización tiene que estar adentro."
+    }
+  ]
+}
