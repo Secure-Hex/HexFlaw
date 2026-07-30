@@ -317,6 +317,10 @@ class Orchestrator:
                 scope_boost_paths=boost_paths,
                 near_dedup_threshold=self.config.get("m4_near_dedup_threshold", 0.95),
                 exhaustive=exhaustive,
+                # M3 ya corrió: el grafo permite rescatar del prefiltro los chunks
+                # que llaman a un sink sin mencionar ninguna keyword.
+                graph=graph,
+                sink_rescue_hops=self.config.get("m4_sink_rescue_hops", 2),
                 on_status=self._set_detail,
                 coverage=self.last_coverage,
             )

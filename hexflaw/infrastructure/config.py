@@ -66,6 +66,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # (endpoints donde unos sanitizan y otros no, suites tipo OWASP Benchmark).
     # El dedup exacto por hash sigue activo siempre.
     "m4_near_dedup_threshold": 0.95,
+    # Saltos máximos hasta un sink para que el prefiltro de M4 rescate un chunk que
+    # no tiene ninguna keyword. Cubre el caso del helper propio: la función que
+    # recibe el input del usuario no dice "subprocess", pero llama a la que sí.
+    # 0 desactiva el rescate; subirlo agranda el scope (y el costo en tokens).
+    "m4_sink_rescue_hops": 2,
     # --- Modo exhaustive ------------------------------------------------- #
     # Analiza TODO el codebase sin prefiltro de sinks, sin límite de scope y con
     # Opus en todas las tareas. Lo activa 'analyze --exhaustive'; acá queda

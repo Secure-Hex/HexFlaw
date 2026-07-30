@@ -20,6 +20,8 @@ from typing import Any, Callable
 
 from hexflaw.core.models import (
     CodeChunk,
+    CodeGraph,
+    EdgeType,
     Finding,
     FindingSet,
     FindingStatus,
@@ -123,6 +125,8 @@ def analyze(
     scope_boost_paths: list[str] | None = None,
     near_dedup_threshold: float = _DEDUP_THRESHOLD,
     exhaustive: bool = False,
+    graph: CodeGraph | None = None,
+    sink_rescue_hops: int = 2,
     on_status: "Callable[[str], None] | None" = None,
     coverage: dict[str, Any] | None = None,
 ) -> FindingSet:
@@ -141,6 +145,13 @@ def analyze(
             acota el análisis a los chunks semánticamente más cercanos a esa
             funcionalidad (CLAUDE.md §6 M2: el target define el scope real).
         scope_max_chunks: Tope de chunks tras el scoping por target.
+        graph: Code graph de M3. Si se provee, el prefiltro rescata los chunks que
+            **alcanzan un sink por el grafo de llamadas** aunque no tengan ninguna
+            keyword. Es lo que salva el patrón más común de falso negativo: el
+            proyecto envuelve el sink en un helper propio, y la función que recibe
+            el input del usuario no menciona ninguna keyword conocida.
+        sink_rescue_hops: Saltos máximos hasta un sink para rescatar un chunk.
+            0 desactiva el rescate.
         on_status: Callback opcional para reportar sub-fases (observabilidad CLI).
 
     Returns:
@@ -154,7 +165,9 @@ def analyze(
         relevant = list(ingestion.chunks)
         logger.info("M4 exhaustive: %d chunks (sin prefiltro de sinks)", len(relevant))
     else:
-        relevant = _prefilter(ingestion, target, languages_service)
+        relevant = _prefilter(
+            ingestion, target, languages_service, graph, sink_rescue_hops
+        )
         logger.info(
             "M4 capa 1 (keyword): %d/%d chunks", len(relevant), len(ingestion.chunks)
         )
@@ -490,6 +503,8 @@ def _prefilter(
     ingestion: IngestionResult,
     target: TargetDefinition,
     languages_service: LanguageService,
+    graph: CodeGraph | None = None,
+    sink_rescue_hops: int = 2,
 ) -> list[CodeChunk]:
     """Capa 1 — filtro keyword (costo cero) sobre el vuln_profile activo.
 
@@ -517,12 +532,61 @@ def _prefilter(
             ", ".join(sorted(uncovered)),
         )
 
-    return [
+    by_keyword = [
         chunk
         for chunk in ingestion.chunks
         if chunk.language in uncovered
         or any(k in chunk.code.lower() for k in keywords)
     ]
+    if graph is None or sink_rescue_hops <= 0:
+        return by_keyword
+
+    kept = {chunk.id for chunk in by_keyword}
+    reaching = _nodes_reaching_sink(graph, sink_rescue_hops)
+    rescued = [c for c in ingestion.chunks if c.id not in kept and c.id in reaching]
+    if rescued:
+        logger.info(
+            "M4 capa 1: %d chunk(s) rescatados por el grafo (alcanzan un sink en "
+            "<=%d salto(s) sin tener keywords): %s",
+            len(rescued),
+            sink_rescue_hops,
+            ", ".join(f"{c.file}::{c.name}" for c in rescued[:5])
+            + (" …" if len(rescued) > 5 else ""),
+        )
+    return by_keyword + rescued
+
+
+def _nodes_reaching_sink(graph: CodeGraph, hops: int) -> set[str]:
+    """Ids que alcanzan algún nodo sink en ``hops`` saltos o menos.
+
+    Se resuelve con **un BFS inverso desde los sinks** sobre las aristas ``calls``
+    invertidas: O(V+E) una sola vez, en vez de un recorrido por chunk. Los sinks
+    mismos quedan incluidos, pero ya los retiene el filtro por keyword.
+
+    Solo se siguen aristas ``calls``, porque la relación que responde "quién puede
+    alimentar este sink" es la de llamada. Las ``data_flow`` hacia adelante
+    duplican a las ``calls`` y las de retorno apuntan al revés; medido, incluirlas
+    no cambia el conjunto resultante, así que se usa la relación más simple.
+    """
+    callers: dict[str, list[str]] = {}
+    for edge in graph.edges:
+        if edge.type == EdgeType.CALLS:
+            callers.setdefault(edge.to, []).append(edge.from_)
+
+    frontier = {s.node_id for s in graph.sinks}
+    reaching = set(frontier)
+    for _ in range(hops):
+        nxt = {
+            caller
+            for node in frontier
+            for caller in callers.get(node, [])
+            if caller not in reaching
+        }
+        if not nxt:
+            break
+        reaching |= nxt
+        frontier = nxt
+    return reaching
 
 
 def _batches(items: list[CodeChunk], size: int) -> Iterator[list[CodeChunk]]:
