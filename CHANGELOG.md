@@ -6,23 +6,24 @@ de los mensajes de commit, siguiendo [Conventional Commits](https://www.conventi
 
 | Prefijo del commit | Efecto |
 |---|---|
-| `fix:` | sube el patch (0.2.0 → 0.2.1) |
-| `feat:` | sube el minor (0.2.0 → 0.3.0) |
-| `BREAKING CHANGE:` en el cuerpo | **mientras estemos en 0.x, sube el minor** (`major_on_zero = false`) |
+| `fix:` | sube el patch (1.0.0 → 1.0.1) |
+| `feat:` | sube el minor (1.0.0 → 1.1.0) |
+| `BREAKING CHANGE:` en el cuerpo | sube el major (1.0.0 → 2.0.0) |
 | `chore:`, `docs:`, `test:`, `style:`, `refactor:` | no publica nada |
 
-El salto a 1.0.0 es una decisión de producto: se hace subiendo `version` a mano
-una vez y dejando que el automatismo siga desde ahí. A partir de 1.0.0, un
-`BREAKING CHANGE` sí sube el major.
+Desde 1.0.0 rige semver pleno: los contratos públicos —los modelos de
+`core/models.py`, el formato de `code_graph.json` y la superficie de la CLI— son
+un compromiso. Romperlos exige un `BREAKING CHANGE:` explícito en el commit, que
+lleva la versión a 2.0.0.
 
 **No edites este archivo a mano debajo del marcador**: la próxima release lo
 sobrescribe.
 
 <!-- version list -->
 
-## v0.2.0 (2026-07-30)
+## v1.0.0 (2026-07-30)
 
-Primera versión publicada. Punto de adopción de versionado y changelog
+Primer release completo. Punto de adopción de versionado y changelog
 automáticos: las entradas siguientes se generan solas.
 
 ### Features

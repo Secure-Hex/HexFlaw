@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hexflaw"
-version = "0.2.0"
+version = "1.0.0"
 description = "AI-powered source code vulnerability analyzer — by SecureHex"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ keywords = ["security", "sast", "vulnerability", "llm", "static-analysis"]
 # Sin clasificador de licencia: ya se declara arriba y PyPI rechaza la duplicación
 # cuando la licencia va como expresión SPDX (Metadata-Version 2.4).
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
@@ -75,15 +75,16 @@ packages = ["hexflaw"]
 
 [tool.semantic_release]
 # La versión y el CHANGELOG se derivan de los conventional commits: nadie edita
-# 'version' a mano. 'feat' sube minor, 'fix' sube patch, 'BREAKING CHANGE' sube
+# 'version' a mano. 'fix' sube patch, 'feat' sube minor, 'BREAKING CHANGE' sube
 # major; los commits 'chore'/'docs'/'test'/'style' no publican nada.
 version_toml = ["pyproject.toml:project.version"]
 commit_parser = "conventional"
 tag_format = "v{version}"
-# major_on_zero = false: en 0.x un 'feat' sube 0.2 → 0.3, no 0.x → 1.0. El salto
-# a 1.0 es una decisión de producto, no algo que dispare un commit.
+# Desde 1.0.0 rige semver pleno: un BREAKING CHANGE sube el major. Estos dos
+# flags solo gobiernan el rango 0.x y quedan como documentación de que la
+# decisión fue deliberada, no un default olvidado.
 major_on_zero = false
-allow_zero_version = true
+allow_zero_version = false
 build_command = "python -m pip install build && python -m build"
 commit_message = "chore(release): {version}\n\n[skip ci]"
 

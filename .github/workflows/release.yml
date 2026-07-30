@@ -3,8 +3,8 @@ name: Release
 # Versionado y changelog automáticos a partir de los conventional commits.
 #
 # Al pushear a main, python-semantic-release lee los commits desde el último tag:
-#   fix:             → patch      feat:  → minor
-#   BREAKING CHANGE: → minor mientras estemos en 0.x (major_on_zero = false)
+#   fix:             → patch      feat: → minor
+#   BREAKING CHANGE: → major
 #   chore/docs/test/style/refactor → no publica nada
 #
 # Si no hay commits publicables, el job termina sin hacer nada. Ese es el gate:
@@ -14,7 +14,7 @@ name: Release
 #
 # 1. Tag de base. semantic-release calcula desde el último tag, no desde
 #    pyproject. Sin un tag inicial arrancaría en 0.1.0 e ignoraría el historial:
-#      git tag v0.2.0 && git push origin v0.2.0
+#      git tag v1.0.0 && git push origin v1.0.0
 #
 # 2. Trusted Publishing en PyPI (no hay token guardado en el repo):
 #    https://pypi.org/manage/project/hexflaw/settings/publishing/
