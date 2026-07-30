@@ -1,0 +1,49 @@
+{
+  "id": "kotlin",
+  "name": "Kotlin",
+  "extensions": [
+    ".kt",
+    ".kts"
+  ],
+  "tree_sitter_package": "tree-sitter-kotlin",
+  "app_types": [
+    "mobile",
+    "web"
+  ],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "path_traversal",
+    "insecure_storage",
+    "intent_spoofing",
+    "deserialization",
+    "ssrf"
+  ],
+  "entry_point_patterns": [
+    "fun main",
+    "override fun onCreate",
+    "override fun onReceive",
+    "override fun onStartCommand",
+    "@RequestMapping",
+    "@GetMapping",
+    "@PostMapping",
+    "suspend fun"
+  ],
+  "sink_patterns": [
+    "Runtime.getRuntime",
+    "ProcessBuilder",
+    "exec(",
+    "rawQuery",
+    "execSQL",
+    "SQLiteDatabase",
+    "loadUrl",
+    "addJavascriptInterface",
+    "getSharedPreferences",
+    "openFileOutput",
+    "ObjectInputStream",
+    "startActivity",
+    "sendBroadcast",
+    "File("
+  ],
+  "notes": "Android: intents implicitos, addJavascriptInterface en WebView y SharedPreferences sin cifrar son la superficie principal. En backend (Spring) mirar rawQuery/execSQL y ProcessBuilder con input."
+}

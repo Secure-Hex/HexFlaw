@@ -13,7 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from hexflaw.core.models import CodeGraph
+from hexflaw.core.models import GRAPH_SCHEMA_VERSION, CodeGraph
 from hexflaw.infrastructure import storage
 from hexflaw.infrastructure.logging import get_logger
 
@@ -50,7 +50,12 @@ class GraphService:
         digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
         storage.write_json(self.graph_path, payload)
         storage.write_json(
-            self.integrity_path, {"sha256": digest, "source_hash": source_hash}
+            self.integrity_path,
+            {
+                "sha256": digest,
+                "source_hash": source_hash,
+                "schema_version": GRAPH_SCHEMA_VERSION,
+            },
         )
         logger.debug("code_graph.json persistido (sha256=%s)", digest[:12])
 
@@ -70,6 +75,19 @@ class GraphService:
             payload = storage.read_json(self.graph_path)
         except (ValueError, OSError) as exc:
             logger.warning("No se pudo leer code_graph cacheado: %s", exc)
+            return None
+
+        # La versión se chequea ANTES del source_hash: un grafo de una versión
+        # anterior hay que descartarlo aunque el código sea idéntico, porque lo
+        # construyó otro algoritmo. Si no, un proyecto ya analizado se queda para
+        # siempre con el grafo viejo y M5 razona peor sin que nada lo indique.
+        cached_version = integrity.get("schema_version", 1)
+        if cached_version != GRAPH_SCHEMA_VERSION:
+            logger.info(
+                "code_graph.json es de la versión %s (actual: %s); se regenera con M3",
+                cached_version,
+                GRAPH_SCHEMA_VERSION,
+            )
             return None
 
         if integrity.get("source_hash") != source_hash:

@@ -72,6 +72,15 @@ class FileEntry(BaseModel):
     size_bytes: int = Field(..., ge=0)
 
 
+class ChunkKind(str, Enum):
+    """Naturaleza del símbolo que representa un chunk (lo llena el chunker AST)."""
+
+    FUNCTION = "function"
+    METHOD = "method"
+    CLASS = "class"
+    MODULE = "module"
+
+
 class CodeChunk(BaseModel):
     """Unidad semántica de código (una función/clase) lista para indexar/analizar."""
 
@@ -83,6 +92,12 @@ class CodeChunk(BaseModel):
     line_start: int = Field(..., ge=1)
     line_end: int = Field(..., ge=1)
     hash: str = Field(..., description="SHA-256 del texto del chunk (clave de caché).")
+    #: Naturaleza del símbolo. Solo la llenan los chunkers con AST; ``None`` en
+    #: chunks producidos por el fallback regex y en artefactos pre-feature.
+    kind: ChunkKind | None = None
+    #: Nombre calificado dentro del archivo (ej. ``"Controller.handle"``). ``name``
+    #: sigue siendo el símbolo desnudo para no romper el matching de M4/M5.
+    qualname: str | None = None
 
 
 class IngestionResult(BaseModel):
@@ -124,6 +139,10 @@ class EdgeType(str, Enum):
     """Tipo de arista en el code graph."""
 
     CALLS = "calls"
+    #: Datos de A alcanzan a B: argumento tainted en la llamada, o valor de retorno.
+    DATA_FLOW = "data_flow"
+    #: Alcanzar B desde A depende de una condición (la llamada está guardada).
+    CONTROL_FLOW = "control_flow"
 
 
 class GraphNode(BaseModel):
@@ -147,6 +166,14 @@ class GraphEdge(BaseModel):
     from_: str = Field(..., alias="from")
     to: str
     type: EdgeType = EdgeType.CALLS
+    #: Variables cuyo dato viaja por esta arista (solo ``data_flow``).
+    data_vars: list[str] = Field(default_factory=list)
+    #: Condición que guarda la llamada (solo ``control_flow``), ej. ``if user.is_admin``.
+    condition: str = Field(
+        "", description="Texto de la guarda del call site; vacío si es incondicional."
+    )
+    #: ``True`` si el dato pasa por un sanitizador reconocido antes de llegar a ``to``.
+    sanitized: bool = False
 
     model_config = {"populate_by_name": True}
 
@@ -157,6 +184,23 @@ class SinkRef(BaseModel):
     node_id: str
     sink_type: str = Field(..., description="ej. 'command_execution', 'file_write'.")
     function: str
+
+
+#: Versión del artefacto M3. **Subirla cuando cambie el formato del grafo o la
+#: semántica con la que se construye**, no solo cuando se agregue un campo.
+#:
+#: El caché de ``code_graph.json`` se valida por hash del código fuente: si el
+#: código no cambió, se reutiliza el grafo. Sin esta versión, un proyecto ya
+#: analizado seguiría usando un grafo construido con el algoritmo viejo — sin
+#: aristas ``data_flow``/``control_flow``, por ejemplo — y M5 razonaría sobre un
+#: grafo peor sin que nada lo indique. Es un falso negativo silencioso.
+#:
+#: Historial:
+#:   1 — call graph heurístico por regex, solo aristas ``calls``.
+#:   2 — resolución por AST (Python ``ast`` + tree-sitter), nodos con
+#:       function/method/class/module, y aristas ``data_flow``/``control_flow``
+#:       con ``data_vars``, ``condition`` y ``sanitized``.
+GRAPH_SCHEMA_VERSION = 2
 
 
 class CodeGraph(BaseModel):
@@ -225,6 +269,8 @@ class Finding(BaseModel):
     review_reason: str = Field(
         "", description="Por qué M5 no concluyó (estado needs_review)."
     )
+    #: Id del hallazgo semilla que originó esta variante (M5b); None si no lo es.
+    variant_of: str | None = None
 
 
 class FindingSet(BaseModel):

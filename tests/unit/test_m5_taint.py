@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hexflaw.core.models import CodeGraph, IngestionResult
 from pathlib import Path
 
 from hexflaw.core.models import Finding, FindingSet, FindingStatus
@@ -20,7 +21,7 @@ class ConfirmingLLM(LLMService):
         super().__init__(api_key="fake")
         self.calls = 0
 
-    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:  # type: ignore[override]
+    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:
         self.calls += 1
         payload = (
             '{"status": "confirmed", "severity": "high", '
@@ -29,7 +30,7 @@ class ConfirmingLLM(LLMService):
         return LLMResponse(text=payload, model="fake")
 
 
-def _setup():
+def _setup() -> tuple[IngestionResult, CodeGraph]:
     langs = LanguageService()
     ingestion = m1_ingestion.ingest(FIXTURES / "sample_c", "p", langs)
     graph = m3_graph.build_graph(ingestion, langs)

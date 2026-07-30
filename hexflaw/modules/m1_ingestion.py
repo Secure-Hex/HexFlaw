@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat as stat_module
+from collections.abc import Iterator
 from pathlib import Path
 
 from hexflaw.core.models import (
@@ -202,7 +203,7 @@ def ingest(
     )
 
 
-def _walk_safe(root: Path, skipped: list[str]):
+def _walk_safe(root: Path, skipped: list[str]) -> Iterator[Path]:
     """Recorre ``root`` sin seguir symlinks (T-M1-2) y sin salir del sandbox (T-M1-1).
 
     Yields:
@@ -253,6 +254,8 @@ def _chunk_file(
                 line_start=raw.line_start,
                 line_end=raw.line_end,
                 hash=chunk_hash(raw.code),
+                kind=raw.kind,
+                qualname=raw.qualname,
             )
         )
     return result

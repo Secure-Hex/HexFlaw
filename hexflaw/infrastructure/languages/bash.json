@@ -1,0 +1,53 @@
+{
+  "id": "bash",
+  "name": "Bash/Shell",
+  "extensions": [
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ksh"
+  ],
+  "tree_sitter_package": "tree-sitter-bash",
+  "app_types": [
+    "firmware",
+    "binary",
+    "web"
+  ],
+  "vuln_profile": [
+    "command_injection",
+    "path_traversal",
+    "hardcoded_credentials",
+    "insecure_temp_file",
+    "privilege_escalation"
+  ],
+  "entry_point_patterns": [
+    "$1",
+    "$2",
+    "$@",
+    "$*",
+    "read ",
+    "getopts",
+    "QUERY_STRING",
+    "REQUEST_METHOD"
+  ],
+  "sink_patterns": [
+    "eval",
+    "exec",
+    "source ",
+    ". /",
+    "$(",
+    "`",
+    "sh -c",
+    "bash -c",
+    "curl",
+    "wget",
+    "chmod 777",
+    "sudo",
+    "mktemp",
+    "/tmp/",
+    "PASSWORD=",
+    "TOKEN=",
+    "API_KEY="
+  ],
+  "notes": "En firmware los CGI en shell son la superficie clasica: QUERY_STRING sin quotear hacia eval o $(). Variables sin comillas dobles son injection incluso sin eval."
+}
