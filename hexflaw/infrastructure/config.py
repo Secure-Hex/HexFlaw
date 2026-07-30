@@ -59,6 +59,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # entrenado para code search (CodeSearchNet), sin trust_remote_code por seguridad.
     "local_embedding_model": "flax-sentence-embeddings/st-codesearch-distilroberta-base",
     "local_embedding_trust_remote_code": False,
+    # --- M4: dedup near-duplicados -------------------------------------- #
+    # Umbral de similitud coseno para descartar un chunk como near-duplicado. Un
+    # valor > 1.0 lo desactiva (ningún par lo supera): necesario en codebases con
+    # código legítimamente repetido pero de distinto comportamiento de seguridad
+    # (endpoints donde unos sanitizan y otros no, suites tipo OWASP Benchmark).
+    # El dedup exacto por hash sigue activo siempre.
+    "m4_near_dedup_threshold": 0.95,
+    # --- Modo exhaustive ------------------------------------------------- #
+    # Analiza TODO el codebase sin prefiltro de sinks, sin límite de scope y con
+    # Opus en todas las tareas. Lo activa 'analyze --exhaustive'; acá queda
+    # registrado para que 'config --show' lo liste.
+    "exhaustive": False,
+    # --- M5b: variant hunting ------------------------------------------- #
+    # Usa los confirmados de M5 como semilla y caza sus vecinos en el espacio de
+    # embeddings, re-analizándolos aunque el scope de M4 los hubiera descartado.
+    "variant_hunting": True,
+    "variant_top_k": 10,  # vecinos máximos por semilla
+    "variant_min_similarity": 0.78,  # umbral coseno para considerar un vecino
+    "variant_max_total": 50,  # tope duro de variantes exploradas
+    "variant_max_rounds": 5,  # tope duro de rondas iterativas
 }
 
 

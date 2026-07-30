@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import List
 
 import typer
@@ -38,6 +39,17 @@ def analyze_command(
         "--llm-backend",
         help="api (Anthropic) | openai | agent (cola de archivos, sin tokens; ver 'hexflaw agent').",
     ),
+    hunt_variants: bool = typer.Option(
+        None,
+        "--hunt-variants/--no-hunt-variants",
+        help="M5b: cazar variantes de los confirmados vía embeddings (default: on salvo economy).",
+    ),
+    exhaustive: bool = typer.Option(
+        False,
+        "--exhaustive",
+        help="Máxima cobertura: analiza TODO el codebase (sin prefiltro de sinks, sin "
+        "límite de scope, sin dedup) con Opus en todas las tareas. El más lento y caro.",
+    ),
 ) -> None:
     """Ejecuta el análisis estático preliminar y persiste los hallazgos."""
     overrides: dict[str, object] = {}
@@ -47,11 +59,19 @@ def analyze_command(
         overrides["token_budget"] = budget
     if llm_backend:
         overrides["llm_backend"] = llm_backend
-    overrides = overrides or None
+    if hunt_variants is not None:
+        overrides["variant_hunting"] = hunt_variants
+    if exhaustive:
+        # Preset agresivo: nada se descarta antes del LLM y se usa Opus en todo.
+        overrides["exhaustive"] = True
+        overrides.setdefault("analysis_mode", "thorough")
+        overrides["scope_max_chunks"] = 1_000_000  # efectivamente sin límite
+        overrides["m4_near_dedup_threshold"] = 2.0  # desactiva dedup near
+    effective = overrides or None
     boost_paths = _parse_paths(path)
 
     with handle_project_errors():
-        orchestrator = build_orchestrator(overrides=overrides)
+        orchestrator = build_orchestrator(overrides=effective)
         findings = console.live_run(
             orchestrator,
             lambda: orchestrator.run_analyze(target, boost_paths=boost_paths),
@@ -143,7 +163,7 @@ def _print_target(target: object) -> None:
     )
 
 
-def _print_coverage(coverage: dict, boost_paths: list[str]) -> None:
+def _print_coverage(coverage: dict[str, Any], boost_paths: list[str]) -> None:
     """Muestra qué se analizó (incluido el path apuntado y lo que salió limpio)."""
     if not coverage:
         return
