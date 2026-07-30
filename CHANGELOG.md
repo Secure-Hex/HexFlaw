@@ -21,6 +21,14 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.5.0 (2026-07-30)
+
+### Features
+
+- **m4**: Give the LLM the graph context instead of an isolated chunk
+  ([`ea344b2`](https://github.com/Secure-Hex/HexFlaw/commit/ea344b207cdb43c832a79a489d04754a19e29187))
+
+
 ## v1.4.1 (2026-07-30)
 
 ### Bug Fixes
