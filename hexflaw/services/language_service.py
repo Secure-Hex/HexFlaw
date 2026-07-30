@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +259,36 @@ class LanguageService:
     def get(self, language_id: str) -> LanguageDefinition | None:
         """Obtiene la definición activa de un lenguaje por su ``id``."""
         return self._by_id.get(language_id)
+
+    def apply_overlay(self, overlay: dict[str, list[str]]) -> None:
+        """Suma ``sink_patterns`` aprendidos **solo para esta sesión/proyecto**.
+
+        Los sinks que se aprenden del código de un proyecto son de ese proyecto: un
+        helper llamado ``run_cmd`` en un cliente no debería marcar nada en el
+        siguiente. Por eso el aprendizaje automático se guarda en el ``.hexflaw/``
+        del proyecto y se superpone acá en memoria, en vez de escribir en
+        ``~/.hexflaw/languages/custom/``, que es global y afecta a todo análisis
+        futuro.
+
+        El comando explícito ``languages learn`` sí persiste global: ahí el usuario
+        pidió que ese conocimiento sea reutilizable.
+
+        Args:
+            overlay: ``{language_id: [sink_pattern, ...]}`` a sumar a lo existente.
+        """
+        for language_id, patterns in overlay.items():
+            definition = self._by_id.get(language_id)
+            if definition is None or not patterns:
+                continue
+            merged = sorted({p.lower() for p in definition.sink_patterns} | set(patterns))
+            self._by_id[language_id] = replace(definition, sink_patterns=merged)
+            for extension in definition.extensions:
+                self._by_ext[extension] = self._by_id[language_id]
+            logger.info(
+                "Overlay de sinks para '%s': +%d patrones aprendidos del proyecto",
+                language_id,
+                len(merged) - len(definition.sink_patterns),
+            )
 
     def known_languages(self) -> list[str]:
         """Lista los ``id`` de todos los lenguajes cargados."""

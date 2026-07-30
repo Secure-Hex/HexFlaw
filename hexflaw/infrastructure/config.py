@@ -71,6 +71,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # recibe el input del usuario no dice "subprocess", pero llama a la que sí.
     # 0 desactiva el rescate; subirlo agranda el scope (y el costo en tokens).
     "m4_sink_rescue_hops": 2,
+    # Aprender sinks por LLM de los lenguajes del proyecto que no tienen cobertura
+    # curada. Es una optimización, no un gasto: esos lenguajes hoy hacen fail-open
+    # (se analizan enteros para no perder vulns), así que una llamada única sale
+    # mucho más barata que ese fail-open en cada corrida. Lo aprendido queda en el
+    # .hexflaw/ del proyecto, nunca en el custom global.
+    "auto_learn_sinks": True,
     # --- Modo exhaustive ------------------------------------------------- #
     # Analiza TODO el codebase sin prefiltro de sinks, sin límite de scope y con
     # Opus en todas las tareas. Lo activa 'analyze --exhaustive'; acá queda

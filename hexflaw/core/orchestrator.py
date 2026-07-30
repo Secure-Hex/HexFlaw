@@ -44,6 +44,7 @@ from hexflaw.modules import (
     m6c_poc,
     source_resolver,
 )
+from hexflaw.services import sink_learner
 from hexflaw.services.embedding import EmbeddingService, get_embedding_service
 from hexflaw.services.embedding.caching import CachingEmbeddingService
 from hexflaw.services.graph_service import GraphService
@@ -292,6 +293,20 @@ class Orchestrator:
         )
 
         # M3 — Code Graph (caché por hash del codebase; se regenera si cambió).
+        # Aprendizaje automático de sinks, ANTES de M3: los sinks los usan tanto el
+        # grafo (marcar nodos) como el prefiltro de M4. Solo corre para lenguajes sin
+        # cobertura curada, que son los que hoy hacen fail-open y se analizan enteros.
+        if self.config.get("auto_learn_sinks", True):
+            overlay = sink_learner.auto_learn(
+                ingestion,
+                self.llm,
+                self.languages,
+                self.project.hexflaw_dir,
+                model=choose_model(Task.STATIC_SIMPLE, mode, exhaustive=exhaustive),
+            )
+            if overlay:
+                self.languages.apply_overlay(overlay)
+
         self._begin_phase("M3 · code graph")
         graph = self._build_or_load_graph(ingestion)
 
