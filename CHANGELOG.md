@@ -21,6 +21,19 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.0.2 (2026-07-30)
+
+### Bug Fixes
+
+- **m4**: Rescue chunks that reach a sink through the call graph
+  ([`9a43ce5`](https://github.com/Secure-Hex/HexFlaw/commit/9a43ce5327416d5a18e578cd6309ee7b026e1c06))
+
+### Documentation
+
+- Update README for the AST code graph and PyPI install
+  ([`6f5b000`](https://github.com/Secure-Hex/HexFlaw/commit/6f5b000adb792acfe5073c2c3dbaa3f1b5b2c078))
+
+
 ## v1.0.1 (2026-07-30)
 
 ### Bug Fixes
