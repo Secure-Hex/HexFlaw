@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 from hexflaw.infrastructure import storage
 from hexflaw.infrastructure.logging import get_logger
@@ -28,7 +29,7 @@ class AnalysisCache:
             hexflaw_dir: Directorio ``.hexflaw/`` del proyecto.
         """
         self.path = hexflaw_dir / "cache" / "analysis_cache.json"
-        self._data: dict[str, list[dict]] = {}
+        self._data: dict[str, list[dict[str, Any]]] = {}
         self.hits = 0
         self._load()
 
@@ -55,14 +56,14 @@ class AnalysisCache:
         material = f"{chunk_hash}|{model}|{','.join(sorted(vuln_profile))}"
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
-    def get(self, key: str) -> list[dict] | None:
+    def get(self, key: str) -> list[dict[str, Any]] | None:
         """Devuelve los findings cacheados para ``key``, o ``None``."""
         value = self._data.get(key)
         if value is not None:
             self.hits += 1
         return value
 
-    def set(self, key: str, findings: list[dict]) -> None:
+    def set(self, key: str, findings: list[dict[str, Any]]) -> None:
         """Almacena los findings de un chunk bajo ``key`` (en memoria)."""
         self._data[key] = findings
 

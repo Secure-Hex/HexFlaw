@@ -11,6 +11,7 @@ pendientes.
 
 from __future__ import annotations
 
+from typing import Any
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -52,7 +53,7 @@ _ALLOWED_FIELDS: dict[str, type] = {
 _REQUIRED_FIELDS = ("id", "name", "extensions")
 
 
-def validate_definition_dict(data: dict) -> list[str]:
+def validate_definition_dict(data: dict[str, Any]) -> list[str]:
     """Valida un dict de definición de lenguaje contra el schema estricto.
 
     Aplica ``additionalProperties: false`` y los límites de longitud del threat
@@ -102,7 +103,7 @@ class LanguageDefinition:
     notes: str = ""
 
     @classmethod
-    def from_dict(cls, data: dict) -> "LanguageDefinition":
+    def from_dict(cls, data: dict[str, Any]) -> "LanguageDefinition":
         """Construye y valida una definición desde un dict JSON.
 
         Args:
@@ -268,7 +269,7 @@ class LanguageService:
         """Indica si existe una definición custom para ``language_id``."""
         return (self.custom_dir / f"{language_id}.json").exists()
 
-    def add_custom(self, data: dict, *, overwrite: bool = False) -> Path:
+    def add_custom(self, data: dict[str, Any], *, overwrite: bool = False) -> Path:
         """Agrega/actualiza una definición custom validándola primero.
 
         Args:

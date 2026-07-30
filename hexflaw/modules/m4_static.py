@@ -15,7 +15,8 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Callable
+from collections.abc import Iterator
+from typing import Any, Callable
 
 from hexflaw.core.models import (
     CodeChunk,
@@ -75,6 +76,26 @@ _VULN_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 _BATCH_SIZES = {"thorough": 5, "balanced": 10, "economy": 20}
 
+#: En modo --exhaustive el prompt no se limita al vuln_profile: le pide al LLM que
+#: busque CUALQUIER clase de vulnerabilidad (con ejemplos representativos para
+#: anclar la cobertura, incluidas las 11 categorías del OWASP Benchmark).
+_EXHAUSTIVE_VULNS = (
+    "CUALQUIER clase de vulnerabilidad de seguridad, sin limitarte a una lista "
+    "(ej.: command/SQL/LDAP/XPath injection, XSS, path traversal, weak crypto, "
+    "weak hash, insecure randomness, insecure cookies, trust boundary violation, "
+    "deserialization, SSRF, XXE, open redirect, buffer/integer overflow, etc.)"
+)
+#: Marcador de vuln_profile para la caché en modo exhaustive (separa sus entradas
+#: de las corridas normales, que analizan menos clases sobre el mismo chunk).
+_EXHAUSTIVE_CACHE_PROFILE = ["__exhaustive__"]
+
+#: Umbral de similitud coseno para near-dup en M4. Un valor > 1.0 desactiva el
+#: near-dup dedup (ningún par lo supera) — necesario en codebases con código
+#: legítimamente repetido pero de distinto comportamiento de seguridad (endpoints
+#: donde unos sanitizan y otros no, benchmarks tipo OWASP). El dedup exacto por
+#: hash sigue activo siempre.
+_DEDUP_THRESHOLD = 0.95
+
 _FINDINGS_INSTRUCTION = (
     "Analiza el siguiente código en busca ÚNICAMENTE de estas clases de "
     "vulnerabilidad: {vulns}. Para cada función sospechosa devuelve un objeto. "
@@ -100,8 +121,10 @@ def analyze(
     scope_query: str | None = None,
     scope_max_chunks: int = 200,
     scope_boost_paths: list[str] | None = None,
+    near_dedup_threshold: float = _DEDUP_THRESHOLD,
+    exhaustive: bool = False,
     on_status: "Callable[[str], None] | None" = None,
-    coverage: dict | None = None,
+    coverage: dict[str, Any] | None = None,
 ) -> FindingSet:
     """Ejecuta el análisis estático preliminar sobre el scope del target.
 
@@ -125,10 +148,16 @@ def analyze(
     """
     notify: Callable[[str], None] = on_status or (lambda _msg: None)
     chosen_model = model or llm.default_model
-    relevant = _prefilter(ingestion, target, languages_service)
-    logger.info(
-        "M4 capa 1 (keyword): %d/%d chunks", len(relevant), len(ingestion.chunks)
-    )
+    # Modo exhaustive: se analiza TODO el codebase, sin filtro de sinks por keyword
+    # (ni siquiera los chunks sin sink conocido se descartan) — máxima cobertura.
+    if exhaustive:
+        relevant = list(ingestion.chunks)
+        logger.info("M4 exhaustive: %d chunks (sin prefiltro de sinks)", len(relevant))
+    else:
+        relevant = _prefilter(ingestion, target, languages_service)
+        logger.info(
+            "M4 capa 1 (keyword): %d/%d chunks", len(relevant), len(ingestion.chunks)
+        )
     # Los chunks bajo --path saltan el filtro keyword: la intención explícita del
     # usuario manda sobre la heurística de sinks (que no conoce wrappers propios
     # del proyecto, ej. gitcmd.NewCommand en vez de exec.Command).
@@ -146,7 +175,7 @@ def analyze(
     # scope_max_chunks más relevantes al target SIN descartar sinks que capa 1
     # ya identificó. Usar umbral aquí causaba falsos negativos (ocultaba vulns
     # reales); el ranking top-N preserva recall, que es lo que importa en SAST.
-    if embedding is not None:
+    if embedding is not None and not exhaustive:
         query = scope_query or " ".join(target.vuln_profile) or "security vulnerability"
         notify(f"M4 · ranking semántico (embeddings, {len(relevant)} chunks)")
         relevant = _scope_filter(
@@ -158,16 +187,25 @@ def analyze(
     # dos veces. Exacta por hash (gratis) + near-dup por coseno > 0.95. Los chunks
     # bajo --path nunca se descartan (intención explícita del usuario).
     before_dedup = len(relevant)
-    relevant = _dedup_chunks(relevant, embedding, keep_paths=scope_boost_paths)
+    relevant = _dedup_chunks(
+        relevant, embedding, keep_paths=scope_boost_paths, threshold=near_dedup_threshold
+    )
     if coverage is not None:
         coverage["deduped"] = before_dedup - len(relevant)
+
+    # Exhaustive: el prompt busca cualquier clase (no solo el vuln_profile) y la
+    # caché usa un perfil marcador para no colisionar con corridas normales.
+    prompt_vulns = _EXHAUSTIVE_VULNS if exhaustive else (
+        ", ".join(target.vuln_profile) or "all"
+    )
+    cache_profile = _EXHAUSTIVE_CACHE_PROFILE if exhaustive else target.vuln_profile
 
     # Caché por hash de chunk: separa hits de los que requieren LLM (estrategia 3).
     findings: list[Finding] = []
     counter = 1
     to_analyze: list[CodeChunk] = []
     for chunk in relevant:
-        cached = _cache_get(cache, chunk, chosen_model, target.vuln_profile)
+        cached = _cache_get(cache, chunk, chosen_model, cache_profile)
         if cached is not None:
             for raw in cached:
                 findings.append(_to_finding(raw, counter, [chunk]))
@@ -181,7 +219,7 @@ def analyze(
         logger.info("M4 caché: %d chunks reutilizados", len(relevant) - len(to_analyze))
     for batch_idx, batch in enumerate(_batches(to_analyze, batch_size), start=1):
         notify(f"M4 · análisis LLM · batch {batch_idx}/{total_batches}")
-        prompt = _FINDINGS_INSTRUCTION.format(vulns=", ".join(target.vuln_profile) or "all")
+        prompt = _FINDINGS_INSTRUCTION.format(vulns=prompt_vulns)
         code_blob = "\n\n".join(
             f"### FILE: {c.file} FUNC: {c.name}\n{c.code}" for c in batch
         )
@@ -200,7 +238,7 @@ def analyze(
             continue
 
         raw_findings = _parse_findings(response.text)
-        _cache_store(cache, batch, raw_findings, chosen_model, target.vuln_profile)
+        _cache_store(cache, batch, raw_findings, chosen_model, cache_profile)
         for raw in raw_findings:
             findings.append(_to_finding(raw, counter, batch))
             counter += 1
@@ -291,10 +329,6 @@ def _scope_filter(
     return kept
 
 
-#: Umbral de similitud coseno para considerar dos chunks near-duplicados (§16).
-_DEDUP_THRESHOLD = 0.95
-
-
 def _dedup_chunks(
     chunks: list[CodeChunk],
     embedding: EmbeddingService | None,
@@ -367,7 +401,7 @@ def _dedup_chunks(
 
 def _cache_get(
     cache: AnalysisCache | None, chunk: CodeChunk, model: str, vuln_profile: list[str]
-) -> list[dict] | None:
+) -> list[dict[str, Any]] | None:
     """Recupera findings cacheados para un chunk, si hay caché."""
     if cache is None:
         return None
@@ -377,7 +411,7 @@ def _cache_get(
 def _cache_store(
     cache: AnalysisCache | None,
     batch: list[CodeChunk],
-    raw_findings: list[dict],
+    raw_findings: list[dict[str, Any]],
     model: str,
     vuln_profile: list[str],
 ) -> None:
@@ -388,7 +422,7 @@ def _cache_store(
     """
     if cache is None:
         return
-    attributed: dict[str, list[dict]] = {c.id: [] for c in batch}
+    attributed: dict[str, list[dict[str, Any]]] = {c.id: [] for c in batch}
     for raw in raw_findings:
         chunk = _attribute_chunk(raw, batch)
         if chunk is not None:
@@ -398,7 +432,7 @@ def _cache_store(
         cache.set(key, attributed[chunk.id])
 
 
-def _attribute_chunk(raw: dict, batch: list[CodeChunk]) -> CodeChunk | None:
+def _attribute_chunk(raw: dict[str, Any], batch: list[CodeChunk]) -> CodeChunk | None:
     """Encuentra el chunk del batch al que pertenece un finding del LLM."""
     file = str(raw.get("file", ""))
     try:
@@ -491,13 +525,13 @@ def _prefilter(
     ]
 
 
-def _batches(items: list, size: int):
+def _batches(items: list[CodeChunk], size: int) -> Iterator[list[CodeChunk]]:
     """Particiona ``items`` en lotes de tamaño ``size``."""
     for i in range(0, len(items), size):
         yield items[i : i + size]
 
 
-def _parse_findings(text: str) -> list[dict]:
+def _parse_findings(text: str) -> list[dict[str, Any]]:
     """Extrae el array de findings de la respuesta del LLM de forma robusta.
 
     Tolera que el modelo envuelva el JSON en fences o agregue texto alrededor.
@@ -540,7 +574,7 @@ def _extract_json_object(text: str) -> str | None:
     return None
 
 
-def _to_finding(raw: dict, index: int, batch: list) -> Finding:
+def _to_finding(raw: dict[str, Any], index: int, batch: list[CodeChunk]) -> Finding:
     """Convierte un dict crudo del LLM en un :class:`Finding` validado.
 
     Completa ``file``/``function`` desde el batch si el modelo los omitió o

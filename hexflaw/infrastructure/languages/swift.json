@@ -1,0 +1,43 @@
+{
+  "id": "swift",
+  "name": "Swift",
+  "extensions": [
+    ".swift"
+  ],
+  "tree_sitter_package": "tree-sitter-swift",
+  "app_types": [
+    "mobile"
+  ],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "insecure_storage",
+    "path_traversal",
+    "certificate_pinning_bypass",
+    "ssrf"
+  ],
+  "entry_point_patterns": [
+    "func application",
+    "func viewDidLoad",
+    "@main",
+    "func handle",
+    "func openURL",
+    "func userNotificationCenter"
+  ],
+  "sink_patterns": [
+    "Process(",
+    "NSTask",
+    "system(",
+    "sqlite3_exec",
+    "sqlite3_prepare",
+    "UserDefaults.standard",
+    "NSKeyedUnarchiver",
+    "evaluateJavaScript",
+    "loadHTMLString",
+    "serverTrust",
+    "URLSession",
+    "FileManager.default",
+    "String(contentsOf"
+  ],
+  "notes": "iOS: UserDefaults como almacenamiento inseguro, NSKeyedUnarchiver sin allowedClasses, y serverTrust aceptado sin validar (pinning bypass) son los patrones que mas aparecen."
+}

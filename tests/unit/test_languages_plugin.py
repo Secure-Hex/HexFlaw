@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pathlib import Path
 
 import pytest
@@ -9,7 +11,7 @@ import pytest
 from hexflaw.services.language_service import LanguageService, validate_definition_dict
 
 
-def _valid_def() -> dict:
+def _valid_def() -> dict[str, Any]:
     return {
         "id": "cobol",
         "name": "COBOL",
@@ -42,7 +44,7 @@ def test_validate_rejects_overlong_field() -> None:
     assert any("excede" in e for e in errors)
 
 
-def test_add_and_remove_custom(tmp_path: Path, monkeypatch) -> None:
+def test_add_and_remove_custom(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "home"))
     service = LanguageService()
     assert service.get("cobol") is None
@@ -57,7 +59,7 @@ def test_add_and_remove_custom(tmp_path: Path, monkeypatch) -> None:
     assert service.remove_custom("cobol") is False  # ya no existe
 
 
-def test_add_duplicate_requires_overwrite(tmp_path: Path, monkeypatch) -> None:
+def test_add_duplicate_requires_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "home"))
     service = LanguageService()
     service.add_custom(_valid_def())
@@ -66,11 +68,12 @@ def test_add_duplicate_requires_overwrite(tmp_path: Path, monkeypatch) -> None:
     service.add_custom(_valid_def(), overwrite=True)  # ok
 
 
-def test_custom_overrides_builtin(tmp_path: Path, monkeypatch) -> None:
+def test_custom_overrides_builtin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "home"))
     # Custom con id 'c' debe tener precedencia sobre el builtin.
     override = {"id": "c", "name": "C-custom", "extensions": [".c"], "vuln_profile": []}
     service = LanguageService()
     service.add_custom(override, overwrite=True)
     reloaded = LanguageService()
-    assert reloaded.get("c").name == "C-custom"
+    definition = reloaded.get("c")
+    assert definition is not None and definition.name == "C-custom"

@@ -12,6 +12,7 @@ todo proyecto futuro que lo use (precedencia custom > builtin, CLAUDE.md §9b).
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from hexflaw.infrastructure.logging import get_logger
 from hexflaw.services.language_service import LanguageDefinition, LanguageService
@@ -113,10 +114,10 @@ def learn_sinks(
 
 def _definition_dict(
     language_id: str, existing: LanguageDefinition | None, sinks: list[str]
-) -> dict:
+) -> dict[str, Any]:
     """Construye un dict de definición válido preservando los campos existentes."""
     if existing is not None:
-        data: dict = {
+        data: dict[str, Any] = {
             "id": existing.id,
             "name": existing.name,
             "extensions": list(existing.extensions),

@@ -5,19 +5,26 @@ from __future__ import annotations
 from pathlib import Path
 
 from hexflaw.modules import m1_ingestion
-from hexflaw.services.language_service import LanguageService
+from hexflaw.services.language_service import LanguageDefinition, LanguageService
+
+
+def _defined(definition: LanguageDefinition | None) -> LanguageDefinition:
+    """Afirma que la definición existe (el contrato admite ``None``)."""
+    assert definition is not None, "el lenguaje debería estar definido"
+    return definition
+
 
 
 def test_detect_by_shebang_env_form() -> None:
     svc = LanguageService()
-    assert svc.detect_by_shebang("#!/usr/bin/env python3").id == "python"
-    assert svc.detect_by_shebang("#!/usr/bin/env node").id == "javascript"
+    assert _defined(svc.detect_by_shebang("#!/usr/bin/env python3")).id == "python"
+    assert _defined(svc.detect_by_shebang("#!/usr/bin/env node")).id == "javascript"
 
 
 def test_detect_by_shebang_direct_path_and_versions() -> None:
     svc = LanguageService()
-    assert svc.detect_by_shebang("#!/usr/bin/php8").id == "php"
-    assert svc.detect_by_shebang("#!/usr/local/bin/ruby2.7").id == "ruby"
+    assert _defined(svc.detect_by_shebang("#!/usr/bin/php8")).id == "php"
+    assert _defined(svc.detect_by_shebang("#!/usr/local/bin/ruby2.7")).id == "ruby"
 
 
 def test_detect_by_shebang_non_shebang_and_unknown() -> None:

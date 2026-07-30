@@ -6,6 +6,7 @@ detectar modificaciones externas en runs subsiguientes.
 
 from __future__ import annotations
 
+from pathlib import Path
 import hashlib
 import json
 
@@ -17,7 +18,7 @@ from hexflaw.infrastructure.logging import get_logger
 logger = get_logger(__name__)
 
 
-def _paths() -> tuple:
+def _paths() -> tuple[Path, Path]:
     home = global_home()
     return home / "system_profile.json", home / "system_profile.integrity.json"
 

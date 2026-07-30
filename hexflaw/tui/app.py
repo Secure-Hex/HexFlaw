@@ -8,6 +8,7 @@ se integran en la Fase 2 con streaming del razonamiento del modelo.
 from __future__ import annotations
 
 import json as _json
+from typing import Any
 
 from rich.panel import Panel
 from rich.table import Table
@@ -46,7 +47,7 @@ _HELP = """[b]Comandos disponibles[/b]
 [dim]analyze / ingest llegan en la Fase 2 (con razonamiento del modelo en vivo).[/]"""
 
 
-class HexFlawTUI(App):
+class HexFlawTUI(App[None]):
     """Aplicación TUI principal de HexFlaw."""
 
     CSS = """
@@ -204,7 +205,7 @@ class HexFlawTUI(App):
             st = _STATUS_STYLE.get(f.status.value, "white")
             sev = f.severity.value if f.severity else "—"
             sev_st = _SEV_STYLE.get(sev, "dim")
-            cells = [
+            cells: list[str | Text] = [
                 f.id,
                 Text(f.status.value, style=st),
                 Text(sev, style=sev_st),
@@ -275,7 +276,7 @@ class HexFlawTUI(App):
     def _log_line(self, text: str) -> None:
         self.query_one("#output", RichLog).write(text)
 
-    def _on_trace(self, ev: dict) -> None:
+    def _on_trace(self, ev: dict[str, Any]) -> None:
         """Renderiza un evento de traza del LLM (prompt + razonamiento + veredicto)."""
         resp = ev.get("response", "") or ""
         verdict, rationale = "", resp
@@ -309,7 +310,7 @@ class HexFlawTUI(App):
             Panel(body, title=ev.get("label") or ev.get("model"), border_style=border)
         )
 
-    def _analyze_done(self, findings) -> None:
+    def _analyze_done(self, findings: FindingSet) -> None:
         n = len(findings.findings)
         conf = sum(1 for f in findings.findings if f.status.value == "confirmed")
         self.query_one("#output", RichLog).write(
@@ -319,7 +320,7 @@ class HexFlawTUI(App):
         self.query_one("#sidebar", Static).update(self._sidebar_renderable())
 
     # ----- sidebar --------------------------------------------------------- #
-    def _sidebar_renderable(self):
+    def _sidebar_renderable(self) -> Table:
         tbl = Table(show_header=False, box=None, padding=0)
         try:
             project = project_mod.load_project()

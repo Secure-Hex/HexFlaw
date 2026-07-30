@@ -14,6 +14,7 @@ from hexflaw.cli.commands.claude_setup import claude_install_command
 from hexflaw.cli.commands.config import config_command
 from hexflaw.cli.commands.ingest import ingest_command
 from hexflaw.cli.commands.findings import app as findings_app
+from hexflaw.cli.commands.graph import graph_command
 from hexflaw.cli.commands.init import init_command
 from hexflaw.cli.commands.languages import app as languages_app
 from hexflaw.cli.commands.poc import poc_command
@@ -38,6 +39,7 @@ app.command("analyze")(analyze_command)
 app.command("report")(report_command)
 app.command("poc")(poc_command)
 app.command("run")(run_command)
+app.command("graph")(graph_command)
 app.command("status")(status_command)
 app.command("config")(config_command)
 app.command("claude-install")(claude_install_command)

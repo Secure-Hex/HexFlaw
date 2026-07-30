@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hexflaw.core.models import CodeGraph
 from pathlib import Path
 
 from hexflaw.core.models import (
@@ -27,7 +28,7 @@ class RootCauseLLM(LLMService):
     def __init__(self) -> None:
         super().__init__(api_key="fake")
 
-    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:  # type: ignore[override]
+    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:
         payload = (
             '{"summary": "Un atacante puede ejecutar comandos arbitrarios.", '
             '"root_cause": "Input de argv concatenado en un comando shell.", '
@@ -57,7 +58,7 @@ def _confirmed_finding() -> Finding:
     )
 
 
-def _ingestion_and_graph() -> tuple[IngestionResult, object]:
+def _ingestion_and_graph() -> tuple[IngestionResult, CodeGraph]:
     langs = LanguageService()
     ingestion = m1_ingestion.ingest(FIXTURES / "sample_c", "p", langs)
     graph = m3_graph.build_graph(ingestion, langs)

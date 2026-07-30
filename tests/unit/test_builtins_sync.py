@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 
 from hexflaw.services import language_service
 from hexflaw.services.language_service import LanguageService, sync_builtins
 
 
-def test_sync_copies_builtins_readonly(monkeypatch, tmp_path: Path) -> None:
+def test_sync_copies_builtins_readonly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(language_service, "global_home", lambda: tmp_path)
     dest = sync_builtins()
 
@@ -23,7 +25,7 @@ def test_sync_copies_builtins_readonly(monkeypatch, tmp_path: Path) -> None:
     assert (dest.stat().st_mode & 0o777) == 0o555
 
 
-def test_service_loads_from_home_after_sync(monkeypatch, tmp_path: Path) -> None:
+def test_service_loads_from_home_after_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(language_service, "global_home", lambda: tmp_path)
     sync_builtins()
     svc = LanguageService()
@@ -32,7 +34,7 @@ def test_service_loads_from_home_after_sync(monkeypatch, tmp_path: Path) -> None
     assert language_service._builtin_source() == tmp_path / "languages" / "builtin"
 
 
-def test_sync_is_idempotent_and_refreshes_on_change(monkeypatch, tmp_path: Path) -> None:
+def test_sync_is_idempotent_and_refreshes_on_change(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(language_service, "global_home", lambda: tmp_path)
     dest = sync_builtins()
     sync_builtins()  # segunda corrida no debe fallar pese a archivos 444

@@ -1,0 +1,85 @@
+name: Release
+
+# Versionado y changelog automáticos a partir de los conventional commits.
+#
+# Al pushear a main, python-semantic-release lee los commits desde el último tag:
+#   fix:             → patch      feat: → minor
+#   BREAKING CHANGE: → major
+#   chore/docs/test/style/refactor → no publica nada
+#
+# Si no hay commits publicables, el job termina sin hacer nada. Ese es el gate:
+# no hace falta aprobar cada merge, pero un merge de solo docs no dispara release.
+#
+# REQUISITOS DE CONFIGURACIÓN (una sola vez):
+#
+# 1. Tag de base. semantic-release calcula desde el último tag, no desde
+#    pyproject. Sin un tag inicial arrancaría en 0.1.0 e ignoraría el historial:
+#      git tag v1.0.0 && git push origin v1.0.0
+#
+# 2. Trusted Publishing en PyPI (no hay token guardado en el repo):
+#    https://pypi.org/manage/project/hexflaw/settings/publishing/
+#    owner: Secure-Hex · repo: HexFlaw · workflow: release.yml · environment: pypi
+#
+# 3. En Settings → Actions → General, permitir "Read and write permissions" para
+#    que el bot pueda pushear el commit de versión y el tag.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # para forzar una release a mano
+
+permissions:
+  contents: read
+
+concurrency:
+  # Dos releases en paralelo pelearían por el tag y el push a main.
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Se verifica en el mínimo declarado (requires-python) y en el más nuevo:
+        # el piso es el que rompe cuando se usa sintaxis moderna sin querer.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e '.[dev,treesitter]'
+      - run: ruff check .
+      - run: mypy hexflaw tests
+      - run: pytest -q
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write # commit de versión + tag + GitHub Release
+      id-token: write # Trusted Publishing de PyPI
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # semantic-release necesita el historial completo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calcular versión, actualizar CHANGELOG, taggear y buildear
+        id: release
+        uses: python-semantic-release/python-semantic-release@v10
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar en PyPI
+        if: steps.release.outputs.released == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Adjuntar los artefactos a la GitHub Release
+        if: steps.release.outputs.released == 'true'
+        uses: python-semantic-release/publish-action@v10
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.release.outputs.tag }}

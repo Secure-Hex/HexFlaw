@@ -51,3 +51,11 @@ docs/hexflaw-paper.*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Tooling de agentes (skills vendorizadas, no es código del proyecto)
+.atl/
+.agents/
+.kilocode/
+.qwen/
+.claude/
+skills-lock.json

@@ -11,9 +11,11 @@ servicio centraliza:
 
 from __future__ import annotations
 
+from typing import Any
 import json
 import os
 import time
+from collections.abc import Iterator
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -74,7 +76,7 @@ class LLMService:
     #: Hook de traza opcional (lo usa la TUI Fase 2): se invoca por cada llamada con
     #: un dict {label, model, prompt, response, input_tokens, output_tokens}. None =
     #: sin traza (CLI normal, sin overhead). Ver analyze_code(..., trace_label=...).
-    trace: "Callable[[dict], None] | None" = field(default=None, init=False)
+    trace: "Callable[[dict[str, Any]], None] | None" = field(default=None, init=False)
     total_input_tokens: int = field(default=0, init=False)
     total_output_tokens: int = field(default=0, init=False)
     last_model: str = field(default="", init=False)
@@ -83,9 +85,9 @@ class LLMService:
     last_label: str = field(default="", init=False)
     waiting_reason: str = field(default="", init=False)
     #: model_id -> {"calls", "input", "output"} para observabilidad en vivo.
-    model_usage: dict = field(default_factory=dict, init=False)
+    model_usage: dict[str, Any] = field(default_factory=dict, init=False)
     _client: object | None = field(default=None, init=False, repr=False)
-    _windows: dict = field(default_factory=dict, init=False, repr=False)
+    _windows: dict[str, deque[tuple[float, int]]] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.api_key = self.api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -103,7 +105,7 @@ class LLMService:
         """
         if not self.rate_limit_tpm:
             return
-        window: deque = self._windows.setdefault(model, deque())
+        window: deque[tuple[float, int]] = self._windows.setdefault(model, deque())
         while True:
             now = time.monotonic()
             while window and now - window[0][0] >= 60.0:
@@ -140,7 +142,7 @@ class LLMService:
         return max(self.token_budget - self.reserved_tokens, 0)
 
     @contextmanager
-    def reserve_budget(self, fraction: float):
+    def reserve_budget(self, fraction: float) -> Iterator[None]:
         """Reserva una fracción del budget como no consumible dentro del bloque.
 
         Evita que una fase temprana del pipeline (p.ej. M4 static analysis) agote
@@ -188,7 +190,7 @@ class LLMService:
                 "'hexflaw config --api-key sk-ant-...'."
             )
         try:
-            from anthropic import Anthropic  # type: ignore
+            from anthropic import Anthropic
         except ImportError as exc:
             raise LLMServiceError(
                 "El paquete 'anthropic' no está instalado. Ejecuta 'pip install anthropic'."
@@ -379,7 +381,7 @@ class OpenAILLMService(LLMService):
                 "'hexflaw config --api-key ...' con el backend openai."
             )
         try:
-            from openai import OpenAI  # type: ignore
+            from openai import OpenAI
         except ImportError as exc:
             raise LLMServiceError(
                 "El paquete 'openai' no está instalado. Ejecuta 'pip install openai'."
@@ -462,7 +464,7 @@ class AgentQueueLLMService(LLMService):
         return path
 
     @staticmethod
-    def _write_atomic(path: Path, obj: dict) -> None:
+    def _write_atomic(path: Path, obj: dict[str, Any]) -> None:
         """Escribe ``obj`` como JSON de forma atómica (tmp + os.replace), modo 600."""
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,0 +1,56 @@
+{
+  "id": "csharp",
+  "name": "C#",
+  "extensions": [
+    ".cs",
+    ".csx"
+  ],
+  "tree_sitter_package": "tree-sitter-c-sharp",
+  "app_types": [
+    "web",
+    "binary"
+  ],
+  "vuln_profile": [
+    "command_injection",
+    "sql_injection",
+    "path_traversal",
+    "deserialization",
+    "ssrf",
+    "xss",
+    "open_redirect"
+  ],
+  "entry_point_patterns": [
+    "static void Main",
+    "static async Task Main",
+    "[HttpGet",
+    "[HttpPost",
+    "[HttpPut",
+    "[HttpDelete",
+    "[Route",
+    "public IActionResult",
+    "public async Task<IActionResult>",
+    "Request."
+  ],
+  "sink_patterns": [
+    "Process.Start",
+    "ProcessStartInfo",
+    "SqlCommand",
+    "ExecuteNonQuery",
+    "ExecuteReader",
+    "ExecuteScalar",
+    "FromSqlRaw",
+    "ExecuteSqlRaw",
+    "BinaryFormatter",
+    "JavaScriptSerializer",
+    "TypeNameHandling",
+    "XmlSerializer",
+    "File.ReadAllText",
+    "File.WriteAllText",
+    "Path.Combine",
+    "HttpClient",
+    "WebRequest.Create",
+    "Redirect(",
+    "Html.Raw"
+  ],
+  "notes": "BinaryFormatter y TypeNameHandling.All son RCE por deserializacion. FromSqlRaw/SqlCommand con interpolacion es el SQLi tipico de EF Core; Html.Raw el XSS de Razor."
+}

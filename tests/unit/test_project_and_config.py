@@ -31,7 +31,7 @@ def test_find_project_raises_when_absent(tmp_path: Path) -> None:
         project_mod.find_project_root(tmp_path)
 
 
-def test_config_precedence_cli_overrides_local(tmp_path: Path, monkeypatch) -> None:
+def test_config_precedence_cli_overrides_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Aísla el home global para no leer la config real del usuario.
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "globalhome"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -54,7 +54,7 @@ def test_config_precedence_cli_overrides_local(tmp_path: Path, monkeypatch) -> N
     assert cfg2.get("analysis_mode") == "economy"
 
 
-def test_defaults_present_without_any_config(tmp_path: Path, monkeypatch) -> None:
+def test_defaults_present_without_any_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "empty"))
     cfg = config_mod.resolve_config()
     assert cfg.get("embedding_backend") == "local-cpu"

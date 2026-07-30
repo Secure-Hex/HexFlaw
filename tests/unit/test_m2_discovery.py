@@ -17,7 +17,7 @@ class DiscoveryLLM(LLMService):
     def __init__(self) -> None:
         super().__init__(api_key="fake")
 
-    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:  # type: ignore[override]
+    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:
         payload = (
             '{"target": "ping handler", "attack_surface": ["ping.c"], '
             '"vuln_profile": ["command_injection"], '

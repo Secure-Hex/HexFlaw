@@ -58,6 +58,31 @@ def write_json(path: Path, data: Any, mode: int = FILE_MODE) -> None:
     logger.debug("Wrote JSON to %s", path)
 
 
+def write_text(path: Path, text: str, mode: int = FILE_MODE) -> None:
+    """Escribe texto plano con permisos restrictivos, de forma atómica.
+
+    Misma garantía que :func:`write_json`: los exports derivados del código
+    analizado (DOT, Mermaid) pueden contener nombres de archivo y condiciones del
+    target, así que no quedan world-readable.
+
+    Args:
+        path: Ruta destino.
+        text: Contenido a escribir.
+        mode: Permisos POSIX del archivo resultante (default ``600``).
+    """
+    ensure_dir(path.parent)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    _chmod(tmp, mode)
+    os.replace(tmp, path)
+    logger.debug("Wrote text to %s", path)
+
+
+def dumps_json(data: Any) -> str:
+    """Serializa a JSON con el mismo formato que :func:`write_json`."""
+    return json.dumps(data, indent=2, ensure_ascii=False, default=str)
+
+
 def read_json(path: Path) -> Any:
     """Lee y parsea un archivo JSON.
 

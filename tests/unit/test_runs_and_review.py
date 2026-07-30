@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hexflaw.core.models import CodeGraph, IngestionResult
 from pathlib import Path
 
 from hexflaw.core.models import Finding, FindingSet, FindingStatus
@@ -57,7 +58,7 @@ class AmbiguousLLM(LLMService):
         return LLMResponse(text='{"status": "maybe", "notes": ["unclear"]}', model="x")
 
 
-def _setup():
+def _setup() -> tuple[IngestionResult, CodeGraph]:
     langs = LanguageService()
     ing = m1_ingestion.ingest(FIXTURES / "sample_c", "p", langs)
     graph = m3_graph.build_graph(ing, langs)

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from hexflaw.core.model_policy import Task, choose_model
 from hexflaw.core.models import (
@@ -37,6 +39,7 @@ from hexflaw.modules import (
     m3_graph,
     m4_static,
     m5_taint,
+    m5b_variants,
     m6a_rootcause,
     m6b_report,
     m6c_poc,
@@ -49,6 +52,27 @@ from hexflaw.services.language_service import LanguageService
 from hexflaw.services.llm_service import build_llm_service
 
 logger = get_logger(__name__)
+
+
+def _merge_variants(base: FindingSet, variants: FindingSet) -> FindingSet:
+    """Fusiona las variantes de M5b, descartando duplicados de M4/M5.
+
+    Una variante se descarta si su ``(file, line, type)`` ya existe en ``base``
+    (M4 ya lo había encontrado por su cuenta), para no duplicar hallazgos.
+    """
+    if not variants.findings:
+        return base
+    known = {(f.file, f.line, f.type) for f in base.findings}
+    fresh = [
+        v for v in variants.findings if (v.file, v.line, v.type) not in known
+    ]
+    if len(fresh) < len(variants.findings):
+        logger.info(
+            "M5b: %d variante(s) ya cubiertas por M4/M5, descartadas",
+            len(variants.findings) - len(fresh),
+        )
+    base.findings.extend(fresh)
+    return base
 
 
 class Orchestrator:
@@ -70,7 +94,7 @@ class Orchestrator:
         self._phase_start = time.monotonic()
         self._detail = ""
         #: Cobertura del último M4 (chunks en scope, analizados, del path, limpios).
-        self.last_coverage: dict = {}
+        self.last_coverage: dict[str, Any] = {}
         #: ID del último run de análisis archivado.
         self.last_run_id: str | None = None
         #: TargetDefinition del último run (modo M2 + target confirmado), para que
@@ -180,7 +204,7 @@ class Orchestrator:
         return result
 
     @contextmanager
-    def _ingest_lock(self):
+    def _ingest_lock(self) -> Iterator[None]:
         """Lock file durante la ingestión (CLAUDE.md §15, T-INFRA-4)."""
         lock = self.project.hexflaw_dir / "ingest.lock"
         if lock.exists():
@@ -234,6 +258,10 @@ class Orchestrator:
         ingestion = self._load_ingestion()
         mode_str = self.config.get("analysis_mode", "balanced")
         mode = AnalysisMode(mode_str)
+        # Modo exhaustive (--exhaustive): analiza TODO el codebase sin recortes
+        # (sin prefiltro de sinks, sin límite de scope, sin dedup near) y con Opus
+        # en todas las tareas. Máxima cobertura y capacidad, sin importar el costo.
+        exhaustive = self.config.get("exhaustive", False)
 
         # Run ID al inicio: su slug prefija los IDs de findings para que sean únicos
         # entre runs (buscables cross-run), y el run en vivo muestra el mismo ID que
@@ -254,7 +282,7 @@ class Orchestrator:
                 ingestion,
                 self.llm,
                 self.languages,
-                model=choose_model(Task.TARGET_DISCOVERY, mode),
+                model=choose_model(Task.TARGET_DISCOVERY, mode, exhaustive=exhaustive),
             )
 
         # Exponer a la capa de presentación en qué modo trabajó M2 y qué target
@@ -282,12 +310,14 @@ class Orchestrator:
                 self.llm,
                 self.languages,
                 mode=mode_str,
-                model=choose_model(Task.STATIC_SIMPLE, mode),
+                model=choose_model(Task.STATIC_SIMPLE, mode, exhaustive=exhaustive),
                 embedding=embedding,
                 cache=AnalysisCache(self.project.hexflaw_dir),
                 scope_query=target.target_confirmed,
                 scope_max_chunks=self.config.get("scope_max_chunks", 200),
                 scope_boost_paths=boost_paths,
+                near_dedup_threshold=self.config.get("m4_near_dedup_threshold", 0.95),
+                exhaustive=exhaustive,
                 on_status=self._set_detail,
                 coverage=self.last_coverage,
             )
@@ -301,9 +331,48 @@ class Orchestrator:
             graph,
             ingestion,
             self.llm,
-            model=choose_model(Task.TAINT, mode),
+            model=choose_model(Task.TAINT, mode, exhaustive=exhaustive),
             on_status=self._set_detail,
         )
+
+        # M5b — Variant hunting: usa los confirmados de M5 como semilla y caza
+        # sus vecinos en el espacio de embeddings, re-analizándolos aunque el
+        # scope de M4 los hubiera descartado. Off en economy (ahorra tokens).
+        # Con --exhaustive, M4 ya analizó TODOS los chunks del codebase: los vecinos
+        # que M5b cazaría ya fueron cubiertos, así que solo re-pagaría Opus sobre
+        # código ya analizado. Se apaga con log explícito, no en silencio.
+        if exhaustive and self.config.get("variant_hunting", True):
+            logger.info(
+                "M5b omitido: --exhaustive ya analizó el codebase completo, "
+                "cazar variantes solo re-pagaría los mismos chunks"
+            )
+        if (
+            self.config.get("variant_hunting", True)
+            and not exhaustive
+            and mode != AnalysisMode.ECONOMY
+            and embedding is not None
+        ):
+            self._begin_phase("M5b · variant hunting")
+            variants = m5b_variants.hunt_variants(
+                findings,
+                ingestion,
+                target,
+                graph,
+                embedding,
+                self.llm,
+                self.languages,
+                AnalysisCache(self.project.hexflaw_dir),
+                static_model=choose_model(Task.STATIC_SIMPLE, mode, exhaustive=exhaustive),
+                taint_model=choose_model(Task.TAINT, mode, exhaustive=exhaustive),
+                mode=mode_str,
+                top_k=self.config.get("variant_top_k", 10),
+                min_similarity=self.config.get("variant_min_similarity", 0.78),
+                max_variants_total=self.config.get("variant_max_total", 50),
+                max_rounds=self.config.get("variant_max_rounds", 5),
+                exhaustive=exhaustive,
+                on_status=self._set_detail,
+            )
+            findings = _merge_variants(findings, variants)
         self._begin_phase("done")
 
         # IDs únicos cross-run: prefijar con el slug del run para que no colisionen
@@ -461,7 +530,9 @@ class Orchestrator:
                 results[key] = future.result()
         return results
 
-    def _code_by_finding(self, findings, ingestion: IngestionResult) -> dict[str, str]:
+    def _code_by_finding(
+        self, findings: list[Finding], ingestion: IngestionResult
+    ) -> dict[str, str]:
         """Mapea finding_id → código de su función (contexto para M6c)."""
         by_loc: dict[str, str] = {}
         for f in findings:
@@ -475,7 +546,7 @@ class Orchestrator:
         return by_loc
 
     def _ensure_root_causes(
-        self, confirmed, ingestion: IngestionResult, graph: CodeGraph
+        self, confirmed: list[Finding], ingestion: IngestionResult, graph: CodeGraph
     ) -> list[RootCause]:
         """Ejecuta M6a por hallazgo, con caché en ``.hexflaw/findings/``."""
         findings_dir = storage.ensure_dir(self.project.hexflaw_dir / "findings")
@@ -501,7 +572,7 @@ class Orchestrator:
             )
         return FindingSet.model_validate(storage.read_json(self.project.findings_path))
 
-    def _build_or_load_graph(self, ingestion: IngestionResult):
+    def _build_or_load_graph(self, ingestion: IngestionResult) -> CodeGraph:
         """Carga el code graph cacheado si es válido; si no, ejecuta M3."""
         digest = m3_graph.source_hash(ingestion)
         cached = self.graphs.load_if_valid(digest)

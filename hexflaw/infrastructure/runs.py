@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from hexflaw.core.models import FindingSet
@@ -33,7 +34,7 @@ class RunStore:
         self.dir = hexflaw_dir / "runs"
         self.index_path = self.dir / "index.json"
 
-    def save_run(self, run_id: str, findings: FindingSet, meta: dict) -> None:
+    def save_run(self, run_id: str, findings: FindingSet, meta: dict[str, Any]) -> None:
         """Archiva un run (findings + metadata) y actualiza el índice.
 
         Args:
@@ -53,7 +54,7 @@ class RunStore:
         storage.write_json(self.index_path, index)
         logger.info("Run archivado: %s", run_id)
 
-    def list_runs(self) -> list[dict]:
+    def list_runs(self) -> list[dict[str, Any]]:
         """Devuelve la metadata de todos los runs, del más reciente al más viejo."""
         runs = self._load_index().get("runs", [])
         return sorted(runs, key=lambda r: r.get("created_at", ""), reverse=True)
@@ -73,7 +74,7 @@ class RunStore:
             raise FileNotFoundError(f"No existe el run '{run_id}'.")
         return FindingSet.model_validate(storage.read_json(path))
 
-    def _load_index(self) -> dict:
+    def _load_index(self) -> dict[str, Any]:
         if not self.index_path.exists():
             return {"latest": None, "runs": []}
         try:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 
 from hexflaw.infrastructure import profile_store
@@ -42,7 +44,7 @@ def test_profile_system_runs_and_benchmarks() -> None:
     assert profile.recommended_backend in {"local-cpu", "ollama", "voyage"}
 
 
-def test_profile_store_integrity_roundtrip(tmp_path: Path, monkeypatch) -> None:
+def test_profile_store_integrity_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "home"))
     profile = m0_profiling.profile_system()
     profile_store.save_profile(profile)
@@ -52,7 +54,7 @@ def test_profile_store_integrity_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert loaded.recommended_backend == profile.recommended_backend
 
 
-def test_profile_store_detects_tampering(tmp_path: Path, monkeypatch) -> None:
+def test_profile_store_detects_tampering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "home"))
     profile = m0_profiling.profile_system()
     profile_store.save_profile(profile)

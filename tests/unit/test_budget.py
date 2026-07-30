@@ -24,7 +24,7 @@ class ExpensiveLLM(LLMService):
         super().__init__(api_key="fake", token_budget=budget)
         self.calls = 0
 
-    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:  # type: ignore[override]
+    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:
         # Respeta el chequeo de budget del padre.
         if self.token_budget is not None and self.total_tokens >= self.token_budget:
             raise BudgetExceededError("budget")

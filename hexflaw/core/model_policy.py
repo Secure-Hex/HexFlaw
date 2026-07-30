@@ -62,6 +62,8 @@ def choose_model(
     task: Task,
     mode: AnalysisMode = AnalysisMode.BALANCED,
     severity: Severity | None = None,
+    *,
+    exhaustive: bool = False,
 ) -> str:
     """Selecciona el modelo para una tarea según modo y severidad.
 
@@ -69,10 +71,14 @@ def choose_model(
         task: Tarea del pipeline.
         mode: Modo de análisis activo.
         severity: Severidad del hallazgo (relevante en root cause / PoC).
+        exhaustive: Si ``True``, usa Opus en TODAS las tareas (modo ``--exhaustive``:
+            máxima capacidad sin importar el costo).
 
     Returns:
         Identificador del modelo de Anthropic a usar.
     """
+    if exhaustive:
+        return OPUS
     base = _POLICY[mode][task]
     if (
         task in _SEVERITY_SENSITIVE

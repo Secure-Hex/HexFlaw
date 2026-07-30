@@ -42,7 +42,12 @@ def post_json(
         request.add_header(key, value)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise EmbeddingHTTPError(
+                    f"Respuesta inesperada de {url}: se esperaba un objeto JSON"
+                )
+            return payload
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:300]
         raise EmbeddingHTTPError(f"HTTP {exc.code} de {url}: {detail}") from exc

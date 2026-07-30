@@ -17,15 +17,32 @@ from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static, Tree
 
-from hexflaw.core.models import CodeGraph
+from hexflaw.core.models import CodeGraph, GraphEdge, GraphNode
+from hexflaw.core.project import Project
 from hexflaw.infrastructure import storage
 
 
-def _etype(e) -> str:
+def _etype(e: GraphEdge) -> str:
     return getattr(e.type, "value", str(e.type))
 
 
-class GraphScreen(Screen):
+def _eflow(e: GraphEdge) -> str:
+    """Anotación de flujo de una arista: variables, sanitización, guarda.
+
+    Sin esto el visor mostraba solo el tipo de arista y se perdía justamente lo que
+    hace útil el data flow: QUÉ dato viaja y si venía sanitizado.
+    """
+    variables = getattr(e, "data_vars", None) or []
+    if variables:
+        mark = "[green]✓[/]" if getattr(e, "sanitized", False) else "[red]![/]"
+        return f" [dim]{', '.join(variables)}[/] {mark}"
+    condition = getattr(e, "condition", "")
+    if condition:
+        return f" [dim yellow]{condition[:40]}[/]"
+    return ""
+
+
+class GraphScreen(Screen[None]):
     """Pantalla del code graph: árbol de nodos + detalle de aristas con hover."""
 
     CSS = """
@@ -37,18 +54,18 @@ class GraphScreen(Screen):
         ("q", "app.pop_screen", "Volver"),
     ]
 
-    def __init__(self, project) -> None:
+    def __init__(self, project: Project) -> None:
         super().__init__()
         self.project = project
         self.graph: CodeGraph | None = None
-        self._nmap: dict = {}
-        self._out: dict = {}
-        self._in: dict = {}
+        self._nmap: dict[str, GraphNode] = {}
+        self._out: dict[str, list[GraphEdge]] = {}
+        self._in: dict[str, list[GraphEdge]] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield Tree("code graph", id="gtree")
+            yield Tree[str]("code graph", id="gtree")
             yield Static("Pasá por un nodo (mouse o flechas) para ver su detalle.", id="gdetail")
         yield Footer()
 
@@ -71,7 +88,7 @@ class GraphScreen(Screen):
 
     def _build_tree(self) -> None:
         assert self.graph is not None
-        tree = self.query_one("#gtree", Tree)
+        tree = self.query_one("#gtree", Tree[str])
         tree.root.expand()
 
         eps = [self._nmap[i] for i in self.graph.entry_points if i in self._nmap]
@@ -83,7 +100,7 @@ class GraphScreen(Screen):
         for s in self.graph.sinks:
             sink_branch.add_leaf(f"!! {s.function}  ({s.sink_type})", data=s.node_id)
 
-        by_file: dict[str, list] = {}
+        by_file: dict[str, list[GraphNode]] = {}
         for n in self.graph.nodes:
             by_file.setdefault(n.file, []).append(n)
         files_branch = tree.root.add(f"ARCHIVOS ({len(by_file)}) - {len(self.graph.nodes)} nodos")
@@ -93,14 +110,14 @@ class GraphScreen(Screen):
                 mark = "*" if n.is_entry_point else ("!" if n.is_sink else " ")
                 fb.add_leaf(f"{mark} {n.name}  L{n.line_start}", data=n.id)
 
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[str]) -> None:
         """Hover/navegación: actualiza el panel de detalle del nodo apuntado."""
         node_id = event.node.data
         if not node_id or node_id not in self._nmap:
             return
         self.query_one("#gdetail", Static).update(self._detail(node_id))
 
-    def _detail(self, node_id: str):
+    def _detail(self, node_id: str) -> Panel:
         n = self._nmap[node_id]
         t = Table(show_header=False, box=None, expand=True)
         t.add_row("[b]nombre[/]", n.name)
@@ -121,16 +138,16 @@ class GraphScreen(Screen):
         outs = self._out.get(node_id, [])
         ins = self._in.get(node_id, [])
         t.add_row("", "")
-        t.add_row(f"[b cyan]-> llama a ({len(outs)})[/]", "")
+        t.add_row(f"[b cyan]-> sale hacia ({len(outs)})[/]", "")
         for e in outs[:15]:
             dst = self._nmap.get(e.to)
             label = dst.name if dst else e.to
-            t.add_row("", f"[dim]{_etype(e)}[/] -> {label}")
-        t.add_row(f"[b magenta]<- llamado por ({len(ins)})[/]", "")
+            t.add_row("", f"[dim]{_etype(e)}[/] -> {label}{_eflow(e)}")
+        t.add_row(f"[b magenta]<- entra desde ({len(ins)})[/]", "")
         for e in ins[:15]:
             src = self._nmap.get(e.from_)
             label = src.name if src else e.from_
-            t.add_row("", f"[dim]{_etype(e)}[/] <- {label}")
+            t.add_row("", f"[dim]{_etype(e)}[/] <- {label}{_eflow(e)}")
 
         border = "red" if n.is_sink else ("green" if n.is_entry_point else "cyan")
         return Panel(t, title=f"{n.name}", border_style=border)

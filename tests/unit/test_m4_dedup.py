@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hexflaw.core.models import CodeChunk
 from hexflaw.modules.m4_static import _dedup_chunks
+from hexflaw.services.embedding.base import EmbeddingService
 
 
 def _chunk(cid: str, code: str, file: str = "a.py", h: str | None = None) -> CodeChunk:
@@ -13,7 +14,7 @@ def _chunk(cid: str, code: str, file: str = "a.py", h: str | None = None) -> Cod
     )
 
 
-class _NearDupEmbedding:
+class _NearDupEmbedding(EmbeddingService):
     """Embedding de juguete: code igual → vector igual; distinto → ortogonal."""
 
     def __init__(self) -> None:

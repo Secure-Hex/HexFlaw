@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hexflaw.core.models import IngestionResult, TargetDefinition
+from typing import Any
 from pathlib import Path
 
 from hexflaw.infrastructure.analysis_cache import AnalysisCache
@@ -20,7 +22,7 @@ class CountingLLM(LLMService):
         super().__init__(api_key="fake")
         self.calls = 0
 
-    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:  # type: ignore[override]
+    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:
         self.calls += 1
         payload = (
             '{"findings": [{"type": "command_injection", "file": "ping.c", '
@@ -30,7 +32,7 @@ class CountingLLM(LLMService):
         return LLMResponse(text=payload, model="fake")
 
 
-def _setup():
+def _setup() -> tuple[LanguageService, IngestionResult, TargetDefinition]:
     langs = LanguageService()
     ingestion = m1_ingestion.ingest(FIXTURES / "sample_c", "p", langs)
     target = m2_target.define_target_directed("ping", ingestion, langs)
@@ -65,3 +67,44 @@ def test_embedding_filter_keeps_relevant_chunk() -> None:
     )
     # El filtro no debe eliminar el chunk vulnerable (red de seguridad incluida).
     assert any(f.type == "command_injection" for f in result.findings)
+
+
+def test_exhaustive_analyzes_all_chunks() -> None:
+    """--exhaustive analiza TODO el codebase, sin el prefiltro de sinks por keyword."""
+    langs, ingestion, target = _setup()
+
+    cov_normal: dict[str, Any] = {}
+    m4_static.analyze(ingestion, target, CountingLLM(), langs,
+                      exhaustive=False, coverage=cov_normal)
+    cov_exh: dict[str, Any] = {}
+    m4_static.analyze(ingestion, target, CountingLLM(), langs,
+                      exhaustive=True, coverage=cov_exh)
+
+    # Exhaustive cubre TODOS los chunks; normal solo los que pasan el prefiltro.
+    assert cov_exh["scoped"] == len(ingestion.chunks)
+    assert cov_normal["scoped"] <= cov_exh["scoped"]
+
+
+class CapturingLLM(LLMService):
+    """Guarda las instrucciones (prompts) recibidas."""
+
+    def __init__(self) -> None:
+        super().__init__(api_key="fake")
+        self.prompts: list[str] = []
+
+    def analyze_code(self, instruction: str, code: str, **kwargs: object) -> LLMResponse:
+        self.prompts.append(instruction)
+        return LLMResponse(text='{"findings": []}', model="fake")
+
+
+def test_exhaustive_prompt_searches_all_classes() -> None:
+    """En --exhaustive el prompt no se limita al vuln_profile (busca cualquier clase)."""
+    langs, ingestion, target = _setup()
+
+    normal = CapturingLLM()
+    m4_static.analyze(ingestion, target, normal, langs, exhaustive=False)
+    assert any(v in normal.prompts[0] for v in target.vuln_profile)
+
+    exh = CapturingLLM()
+    m4_static.analyze(ingestion, target, exh, langs, exhaustive=True)
+    assert "CUALQUIER" in exh.prompts[0]

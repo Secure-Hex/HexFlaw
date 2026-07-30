@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 import typer
 
 from hexflaw.cli import console
@@ -23,13 +24,13 @@ def _load_findings(run: str | None = None) -> tuple[project_mod.Project, Finding
     return project, FindingSet.model_validate(storage.read_json(project.findings_path))
 
 
-def _all_runs(project: project_mod.Project) -> list[tuple[dict, FindingSet]]:
+def _all_runs(project: project_mod.Project) -> list[tuple[dict[str, Any], FindingSet]]:
     """Carga (meta, FindingSet) de todos los runs del historial, recientes primero.
 
     Permite buscar hallazgos en TODOS los análisis, no solo en el último.
     """
     store = RunStore(project.hexflaw_dir)
-    out: list[tuple[dict, FindingSet]] = []
+    out: list[tuple[dict[str, Any], FindingSet]] = []
     for meta in store.list_runs():
         rid = meta.get("run_id")
         if not rid:
@@ -41,7 +42,7 @@ def _all_runs(project: project_mod.Project) -> list[tuple[dict, FindingSet]]:
     return out
 
 
-def _target_label(fs: FindingSet, meta: dict | None = None) -> str:
+def _target_label(fs: FindingSet, meta: dict[str, Any] | None = None) -> str:
     """Etiqueta legible del target/modo con el que se obtuvo un set de hallazgos."""
     target = fs.target or (meta or {}).get("target") or "—"
     mode = fs.target_mode or (meta or {}).get("target_mode") or "directed"
