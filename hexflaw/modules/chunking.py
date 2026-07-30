@@ -267,12 +267,16 @@ def ts_parse(code: str, ts_lang: str) -> object | None:
     except ImportError:
         return None
     try:
-        parser = get_parser(ts_lang)
+        # El parser se trata como Any a propósito. Las dos APIs que circulan bajo
+        # el mismo nombre de paquete difieren en la firma de parse(): una recibe
+        # str y la otra bytes. Tipar contra la que esté instalada hace que el
+        # type-check pase en una máquina y falle en otra por el MISMO código —
+        # pasó entre este entorno y CI. El tipo real solo se conoce en runtime.
+        parser: Any = get_parser(ts_lang)
         try:
             tree = parser.parse(code)  # API estilo Rust: recibe str
         except TypeError:
-            # API estilo Python: recibe bytes (el stub instalado declara str).
-            tree = parser.parse(bytes(code, "utf-8"))  # type: ignore[arg-type]
+            tree = parser.parse(bytes(code, "utf-8"))  # API estilo Python: bytes
         root: object = _ts_attr(tree, "root_node")
         return root
     except Exception as exc:  # noqa: BLE001 — grammar incompatible / árbol patológico
