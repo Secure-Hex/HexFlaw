@@ -336,6 +336,10 @@ class Orchestrator:
                 # que llaman a un sink sin mencionar ninguna keyword.
                 graph=graph,
                 sink_rescue_hops=self.config.get("m4_sink_rescue_hops", 2),
+                semantic_rescue_threshold=self.config.get(
+                    "m4_semantic_rescue_threshold", 0.22
+                ),
+                semantic_rescue_max=self.config.get("m4_semantic_rescue_max", 25),
                 on_status=self._set_detail,
                 coverage=self.last_coverage,
             )

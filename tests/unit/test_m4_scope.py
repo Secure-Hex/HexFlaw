@@ -11,8 +11,9 @@ from hexflaw.core.models import (
     TargetDefinition,
 )
 from hexflaw.modules import m1_ingestion, m2_target, m3_graph
-from hexflaw.modules.m4_static import _prefilter, _scope_filter
+from hexflaw.modules.m4_static import _prefilter, _scope_filter, _semantic_rescue
 from hexflaw.services.embedding import LocalCPUEmbedding
+from hexflaw.services.embedding.base import EmbeddingService
 from hexflaw.services.language_service import LanguageService
 
 
@@ -185,3 +186,83 @@ def test_sink_rescue_is_bounded_and_does_not_keep_everything(tmp_path: Path) -> 
 
     assert "handler" in kept, "el caller del sink entra"
     assert "add" not in kept and "greet" not in kept, "el código inerte sigue afuera"
+
+
+# --------------------------------------------------------------------------- #
+# Rescate semántico (última red del prefiltro)
+# --------------------------------------------------------------------------- #
+class _ScriptedEmbedding(EmbeddingService):
+    """Embedding determinístico: vector fijo por substring presente en el texto.
+
+    Evita depender de descargar un modelo real en los tests; lo que se verifica es
+    la lógica de umbral, orden y tope, no la calidad del modelo.
+    """
+
+    def __init__(self, table: dict[str, list[float]]) -> None:
+        self._table = table
+
+    def embed(self, code: str) -> list[float]:
+        for key, vector in self._table.items():
+            if key in code:
+                return vector
+        return [0.0, 0.0, 1.0]
+
+    def embed_batch(self, chunks: list[str]) -> list[list[float]]:
+        return [self.embed(c) for c in chunks]
+
+
+def _rescue_setup() -> tuple[list[CodeChunk], TargetDefinition, _ScriptedEmbedding]:
+    peligroso = _chunk(1, "def traer(h, p):\n    PELIGRO conectar y enviar\n")
+    inerte = _chunk(2, "def sumar(a, b):\n    INERTE return a + b\n")
+    embedding = _ScriptedEmbedding(
+        {
+            "subprocess.run": [1.0, 0.0, 0.0],  # la consulta de command_injection
+            "PELIGRO": [0.95, 0.31, 0.0],  # ~0.95 de similitud con la consulta
+            "INERTE": [0.0, 1.0, 0.0],  # ortogonal
+        }
+    )
+    target = TargetDefinition(target_confirmed="t", vuln_profile=["command_injection"])
+    return [peligroso, inerte], target, embedding
+
+
+def test_semantic_rescue_recovers_a_lookalike_chunk() -> None:
+    """Rescata lo que se PARECE a un sink aunque no tenga ninguna keyword."""
+    chunks, target, embedding = _rescue_setup()
+
+    rescued = _semantic_rescue(chunks, target, embedding, threshold=0.22, max_rescued=25)
+
+    assert [c.name for c in rescued] == ["fn1"]
+
+
+def test_semantic_rescue_leaves_inert_code_out() -> None:
+    """El código ortogonal a toda consulta no entra: si no, el filtro deja de filtrar."""
+    chunks, target, embedding = _rescue_setup()
+
+    rescued = _semantic_rescue(chunks, target, embedding, threshold=0.22, max_rescued=25)
+
+    assert all(c.name != "fn2" for c in rescued)
+
+
+def test_semantic_rescue_respects_the_hard_cap() -> None:
+    """El tope acota el costo: se ordenan por score y solo entran los mejores."""
+    chunks, target, embedding = _rescue_setup()
+    muchos = chunks + [_chunk(i, "PELIGRO otra cosa") for i in range(3, 12)]
+
+    rescued = _semantic_rescue(muchos, target, embedding, threshold=0.22, max_rescued=3)
+
+    assert len(rescued) == 3
+
+
+def test_semantic_rescue_is_disabled_without_embeddings() -> None:
+    """Sin backend de embeddings no se rescata nada, y no explota."""
+    chunks, target, _ = _rescue_setup()
+
+    assert _semantic_rescue(chunks, target, None, threshold=0.22, max_rescued=25) == []
+
+
+def test_semantic_rescue_needs_a_known_vuln_class() -> None:
+    """Un perfil sin clases mapeadas no produce consulta: no se inventa uno."""
+    chunks, _, embedding = _rescue_setup()
+    target = TargetDefinition(target_confirmed="t", vuln_profile=["clase_inventada"])
+
+    assert _semantic_rescue(chunks, target, embedding, threshold=0.22, max_rescued=25) == []

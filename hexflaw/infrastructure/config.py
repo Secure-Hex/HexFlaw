@@ -77,6 +77,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # mucho más barata que ese fail-open en cada corrida. Lo aprendido queda en el
     # .hexflaw/ del proyecto, nunca en el custom global.
     "auto_learn_sinks": True,
+    # Rescate semántico: chunks que ninguna keyword vio y que tampoco llaman a un
+    # sink conocido, pero que SE PARECEN a uno. Es la última red del prefiltro y la
+    # más difusa: no deja una razón auditable, solo un score.
+    #
+    # El umbral está MEDIDO, no elegido a ojo: con el modelo por defecto, el código
+    # peligroso puntúa >= 0.29 y el inerte <= 0.14 comparando contra ejemplos de
+    # código. 0.22 cae en ese hueco. Calibrado sobre pocas muestras, así que si ves
+    # rescates de más subilo, y si se pierden hallazgos bajalo. El tope acota el
+    # costo: los chunks se ordenan por score y solo entran los mejores.
+    "m4_semantic_rescue_threshold": 0.22,
+    "m4_semantic_rescue_max": 25,
     # --- Modo exhaustive ------------------------------------------------- #
     # Analiza TODO el codebase sin prefiltro de sinks, sin límite de scope y con
     # Opus en todas las tareas. Lo activa 'analyze --exhaustive'; acá queda

@@ -127,6 +127,8 @@ def analyze(
     exhaustive: bool = False,
     graph: CodeGraph | None = None,
     sink_rescue_hops: int = 2,
+    semantic_rescue_threshold: float = 0.22,
+    semantic_rescue_max: int = 25,
     on_status: "Callable[[str], None] | None" = None,
     coverage: dict[str, Any] | None = None,
 ) -> FindingSet:
@@ -152,6 +154,10 @@ def analyze(
             el input del usuario no menciona ninguna keyword conocida.
         sink_rescue_hops: Saltos máximos hasta un sink para rescatar un chunk.
             0 desactiva el rescate.
+        semantic_rescue_threshold: Similitud coseno mínima para rescatar un chunk
+            que ninguna keyword vio. Alto a propósito: es el rescate más difuso.
+        semantic_rescue_max: Tope duro de chunks rescatados por similitud. 0 lo
+            desactiva.
         on_status: Callback opcional para reportar sub-fases (observabilidad CLI).
 
     Returns:
@@ -167,6 +173,17 @@ def analyze(
     else:
         relevant = _prefilter(
             ingestion, target, languages_service, graph, sink_rescue_hops
+        )
+        # Última red: chunks que ninguna keyword vio y que tampoco llaman a un sink
+        # conocido, pero que se PARECEN a uno. Va al final porque es el rescate más
+        # difuso: sin una razón auditable, solo un score.
+        kept_ids = {c.id for c in relevant}
+        relevant += _semantic_rescue(
+            [c for c in ingestion.chunks if c.id not in kept_ids],
+            target,
+            embedding,
+            threshold=semantic_rescue_threshold,
+            max_rescued=semantic_rescue_max,
         )
         logger.info(
             "M4 capa 1 (keyword): %d/%d chunks", len(relevant), len(ingestion.chunks)
@@ -280,6 +297,120 @@ def analyze(
                 if c.file not in files_with_findings
             ]
     return FindingSet(project_id=ingestion.project_id, findings=findings)
+
+
+#: Consulta semántica por clase de vulnerabilidad, expresada como **ejemplos de
+#: código** y no como descripción en prosa.
+#:
+#: La diferencia no es estilística, está medida. Con descripciones en prosa la
+#: separación entre código peligroso e inerte era de +0.007 (un ``formatear(nombre)``
+#: inocente puntuaba 0.349 y una escritura de archivo 0.356 — indistinguibles). Con
+#: ejemplos de código la separación sube a +0.150. El modelo de embeddings está
+#: entrenado sobre código, así que comparar código contra código conserva mucha más
+#: señal que comparar código contra una frase en español.
+_VULN_QUERIES: dict[str, str] = {
+    "command_injection": (
+        "subprocess.run(cmd, shell=True)\n"
+        "os.system(command)\n"
+        "os.execv(path, args)\n"
+        "Runtime.getRuntime().exec(cmd)"
+    ),
+    "sql_injection": (
+        'cursor.execute("SELECT * FROM t WHERE x = " + value)\n'
+        "statement.executeQuery(query)\n"
+        "db.raw(sql)"
+    ),
+    "path_traversal": (
+        'open(path, "w").write(data)\n'
+        "shutil.copy(src, dst)\n"
+        "os.remove(path)\n"
+        "fs.readFile(filename)"
+    ),
+    "deserialization": (
+        "pickle.loads(data)\nyaml.load(stream)\nObjectInputStream(input).readObject()"
+    ),
+    "ssrf": (
+        "requests.get(url)\n"
+        "urllib.request.urlopen(url)\n"
+        "socket.connect((host, port))\n"
+        "http.Get(endpoint)"
+    ),
+    "xss": (
+        "element.innerHTML = value\n"
+        "response.write(html)\n"
+        "render_template_string(template)"
+    ),
+    "buffer_overflow": (
+        "strcpy(dest, src);\nmemcpy(buf, data, len);\nsprintf(buf, fmt, arg);"
+    ),
+    "format_string": "printf(user_input);\nfprintf(f, fmt);\nsnprintf(b, n, fmt);",
+}
+
+
+def _semantic_rescue(
+    dropped: list[CodeChunk],
+    target: TargetDefinition,
+    embedding: EmbeddingService | None,
+    *,
+    threshold: float,
+    max_rescued: int,
+) -> list[CodeChunk]:
+    """Rescata chunks que ninguna keyword vio pero que *se parecen* a un sink.
+
+    Es la última red del prefiltro, y cubre el hueco que las otras dos no pueden:
+    un sink que no está en ningún catálogo, en un chunk que tampoco llama a nada
+    catalogado. Ahí no hay keyword que matchee ni arista que seguir; lo único que
+    queda es la semántica del código.
+
+    A diferencia del rescate por grafo, este es **difuso**: no hay una razón
+    auditable como "llama a run_cmd", solo un score de similitud. Por eso va
+    último, con umbral alto y tope duro — se prefiere perder algún rescate a
+    inundar el scope de chunks que solo se parecen de lejos.
+
+    Args:
+        dropped: Chunks descartados por las capas anteriores.
+        target: Definición de M2 (de su ``vuln_profile`` sale la consulta).
+        embedding: Backend de embeddings. Si es ``None``, no se rescata nada.
+        threshold: Similitud coseno mínima para rescatar.
+        max_rescued: Tope duro de chunks rescatados.
+
+    Returns:
+        Los chunks rescatados, de mayor a menor similitud.
+    """
+    if embedding is None or not dropped or max_rescued <= 0:
+        return []
+    queries = [_VULN_QUERIES[v] for v in target.vuln_profile if v in _VULN_QUERIES]
+    if not queries:
+        return []
+
+    try:
+        query_vecs = embedding.embed_batch(queries)
+        chunk_vecs = embedding.embed_batch([c.code for c in dropped])
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("Rescate semántico omitido (%s)", exc)
+        return []
+
+    scored: list[tuple[float, CodeChunk]] = []
+    for chunk, vector in zip(dropped, chunk_vecs):
+        # Se toma la mejor coincidencia entre las clases del perfil: un chunk que
+        # se parece mucho a UNA de ellas alcanza para mirarlo.
+        best = max(_cosine(query, vector) for query in query_vecs)
+        if best >= threshold:
+            scored.append((best, chunk))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    rescued = [chunk for _, chunk in scored[:max_rescued]]
+    if rescued:
+        logger.info(
+            "M4 capa 1: %d chunk(s) rescatados por similitud semántica "
+            "(score >= %.2f, tope %d): %s",
+            len(rescued),
+            threshold,
+            max_rescued,
+            ", ".join(f"{c.file}::{c.name}" for c in rescued[:5])
+            + (" …" if len(rescued) > 5 else ""),
+        )
+    return rescued
 
 
 def _scope_filter(
@@ -505,6 +636,8 @@ def _prefilter(
     languages_service: LanguageService,
     graph: CodeGraph | None = None,
     sink_rescue_hops: int = 2,
+    semantic_rescue_threshold: float = 0.22,
+    semantic_rescue_max: int = 25,
 ) -> list[CodeChunk]:
     """Capa 1 — filtro keyword (costo cero) sobre el vuln_profile activo.
 
