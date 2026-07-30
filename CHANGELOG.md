@@ -21,6 +21,20 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.6.0 (2026-07-30)
+
+### Features
+
+- **config**: Add fast / audit / paranoid calibration profiles
+  ([`b40400f`](https://github.com/Secure-Hex/HexFlaw/commit/b40400fbc48abe844fa3fa6576adbbde9d6b25e1))
+
+- **m3**: Teach the graph about web frameworks
+  ([`904213b`](https://github.com/Secure-Hex/HexFlaw/commit/904213bfaead0bcee048ba6122dbb2c46e5a619e))
+
+- **m5**: Attach an auditable evidence trail to every finding
+  ([`78b4ecd`](https://github.com/Secure-Hex/HexFlaw/commit/78b4ecd5121a4c0f85a4d30cc4660a70814f4f36))
+
+
 ## v1.5.0 (2026-07-30)
 
 ### Features
