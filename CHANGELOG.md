@@ -21,6 +21,17 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.1.0 (2026-07-30)
+
+### Features
+
+- **m3**: Qualify call receivers and import the CodeQL sink catalog
+  ([`3ba6138`](https://github.com/Secure-Hex/HexFlaw/commit/3ba61380a1fd3a6092769578b1be74e07228413b))
+
+- **sinks**: Let users import Semgrep rules locally without distributing them
+  ([`b562887`](https://github.com/Secure-Hex/HexFlaw/commit/b5628878db9d3b9dac3dbe06de920f51e24d6411))
+
+
 ## v1.0.2 (2026-07-30)
 
 ### Bug Fixes
