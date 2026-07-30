@@ -252,6 +252,49 @@ class TaintStep(BaseModel):
     note: str
 
 
+class EvidenceOrigin(str, Enum):
+    """Quién estableció un dato del hallazgo.
+
+    Separar esto importa para auditar: lo que derivó el grafo es verificable
+    releyendo el código; lo que afirmó el LLM hay que revisarlo a mano. Un reporte
+    que los mezcla obliga a desconfiar de todo por igual.
+    """
+
+    GRAPH = "graph"  # derivado del AST/grafo: determinístico y reproducible
+    LLM = "llm"  # afirmado por el modelo sobre el código
+    BOTH = "graph+llm"  # el grafo lo propuso y el LLM lo confirmó
+
+
+class Evidence(BaseModel):
+    """Por qué existe un hallazgo, con la traza que permite auditarlo.
+
+    Responde las preguntas que un pentester necesita antes de creerle a un
+    hallazgo: de dónde salió el dato, dónde termina, qué lo sanitizó (o no), por
+    qué camino llegó, y qué parte de todo eso es determinística.
+    """
+
+    #: Entry point donde entra el dato controlable, si se identificó.
+    source: str = ""
+    #: Nodo sink y su clase (``run · command_execution``).
+    sink: str = ""
+    #: Variables que viajan por el camino, según el grafo.
+    tainted_vars: list[str] = Field(default_factory=list)
+    #: Sanitizadores reconocidos en el camino. Vacío no prueba ausencia: solo se
+    #: reconocen los de la lista del lenguaje.
+    sanitizers: list[str] = Field(default_factory=list)
+    #: ``True`` si algún salto del camino lleva datos sin sanitizar.
+    unsanitized: bool = False
+    #: Condiciones que hay que satisfacer para alcanzar el sink.
+    guards: list[str] = Field(default_factory=list)
+    #: Camino ``archivo::función`` desde el entry point hasta el sink.
+    path: list[str] = Field(default_factory=list)
+    #: Cómo se obtuvo el camino: ``data_flow`` (el dato llega), ``calls`` (solo
+    #: alcanzable) o ``none`` (el LLM juzgó el código aislado).
+    path_kind: str = "none"
+    #: Qué estableció cada parte (ver :class:`EvidenceOrigin`).
+    origin: EvidenceOrigin = EvidenceOrigin.LLM
+
+
 class Finding(BaseModel):
     """Hallazgo de vulnerabilidad. Evoluciona de preliminary (M4) a confirmed (M5)."""
 
@@ -271,6 +314,9 @@ class Finding(BaseModel):
     )
     #: Id del hallazgo semilla que originó esta variante (M5b); None si no lo es.
     variant_of: str | None = None
+    #: Traza auditable: source, sink, sanitizadores, camino y qué fue
+    #: determinístico. La llena M5; en ``preliminary`` viene vacía.
+    evidence: Evidence | None = None
 
 
 class FindingSet(BaseModel):

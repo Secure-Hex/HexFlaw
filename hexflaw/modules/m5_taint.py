@@ -28,6 +28,8 @@ from typing import Callable
 from hexflaw.core.models import (
     CodeGraph,
     EdgeType,
+    Evidence,
+    EvidenceOrigin,
     Finding,
     FindingSet,
     FindingStatus,
@@ -397,6 +399,14 @@ def _confirm_with_llm(
     mapped = _map_status(verdict.get("status"))
     severity = _map_severity(verdict.get("severity"))
 
+    evidence = _build_evidence(
+        path_nodes,
+        graph,
+        edge_index or {},
+        is_data_flow=is_data_flow,
+        llm_concluded=mapped is not None,
+    )
+
     if mapped is None:
         # El LLM respondió pero su veredicto fue ambiguo / no clasificable.
         return finding.model_copy(
@@ -404,6 +414,7 @@ def _confirm_with_llm(
                 "status": FindingStatus.NEEDS_REVIEW,
                 "severity": severity,
                 "taint_path": taint_path,
+                "evidence": evidence,
                 "review_reason": "Veredicto del LLM ambiguo o no concluyente; "
                 "requiere revisión manual del código.",
             }
@@ -414,7 +425,65 @@ def _confirm_with_llm(
             "status": mapped,
             "severity": severity,
             "taint_path": taint_path,
+            "evidence": evidence,
         }
+    )
+
+
+def _build_evidence(
+    path_nodes: list[GraphNode],
+    graph: CodeGraph,
+    edge_index: dict[tuple[str, str], list[GraphEdge]],
+    *,
+    is_data_flow: bool,
+    llm_concluded: bool,
+) -> Evidence:
+    """Arma la traza auditable del hallazgo a partir del grafo.
+
+    Lo que va acá es **verificable releyendo el código**: el camino, las variables
+    que viajan, los sanitizadores reconocidos y las guardas salen del AST, no del
+    modelo. ``origin`` deja explícito cuánto de la conclusión es determinístico,
+    para que quien lea el reporte sepa qué revisar a mano y qué no.
+    """
+    tainted: list[str] = []
+    sanitizers: list[str] = []
+    guards: list[str] = []
+    unsanitized = False
+    for index in range(len(path_nodes) - 1):
+        pair = (path_nodes[index].id, path_nodes[index + 1].id)
+        for edge in edge_index.get(pair, []):
+            if edge.type == EdgeType.DATA_FLOW and edge.data_vars:
+                if edge.sanitized:
+                    sanitizers.extend(edge.data_vars)
+                else:
+                    tainted.extend(edge.data_vars)
+                    unsanitized = True
+            elif edge.type == EdgeType.CONTROL_FLOW and edge.condition:
+                guards.append(edge.condition)
+
+    sink_node = path_nodes[-1] if path_nodes else None
+    sink_types = sorted(
+        {s.sink_type for s in graph.sinks if sink_node and s.node_id == sink_node.id}
+    )
+    origin = EvidenceOrigin.LLM
+    if path_nodes:
+        origin = EvidenceOrigin.BOTH if llm_concluded else EvidenceOrigin.GRAPH
+
+    return Evidence(
+        source=f"{path_nodes[0].file}::{path_nodes[0].name}" if path_nodes else "",
+        sink=(
+            f"{sink_node.file}::{sink_node.name}"
+            + (f" · {', '.join(sink_types)}" if sink_types else "")
+            if sink_node
+            else ""
+        ),
+        tainted_vars=sorted(set(tainted)),
+        sanitizers=sorted(set(sanitizers)),
+        unsanitized=unsanitized,
+        guards=guards[:5],
+        path=[f"{n.file}::{n.name}" for n in path_nodes],
+        path_kind=("data_flow" if is_data_flow else "calls") if path_nodes else "none",
+        origin=origin,
     )
 
 

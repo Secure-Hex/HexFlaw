@@ -223,6 +223,47 @@ def _load_root_cause(project: project_mod.Project, finding: Finding) -> RootCaus
         return None
 
 
+def _render_evidence(finding: Finding) -> None:
+    """Muestra la traza auditable: qué probó el grafo y qué afirmó el modelo.
+
+    Es la diferencia entre "el LLM dice que esto es vulnerable" y "el dato entra
+    por acá, no pasa por ningún sanitizador, y llega a este sink". Lo primero hay
+    que revisarlo entero; lo segundo se verifica releyendo esas líneas.
+    """
+    ev = finding.evidence
+    if ev is None:
+        return
+
+    origen = {
+        "graph": "[green]determinístico (grafo)[/]",
+        "graph+llm": "[cyan]grafo + LLM[/]",
+        "llm": "[yellow]solo LLM — verificar a mano[/]",
+    }.get(ev.origin.value, ev.origin.value)
+    camino = {
+        "data_flow": "[red]el DATO llega al sink[/]",
+        "calls": "[yellow]el sink es alcanzable (no se probó el flujo del dato)[/]",
+        "none": "[dim]sin camino en el grafo; juicio sobre el código aislado[/]",
+    }.get(ev.path_kind, ev.path_kind)
+
+    rows = [("Evidencia", origen), ("Camino", camino)]
+    if ev.source:
+        rows.append(("Source", console.esc(ev.source)))
+    if ev.sink:
+        rows.append(("Sink", console.esc(ev.sink)))
+    if ev.tainted_vars:
+        rows.append(("Sin sanitizar", f"[red]{console.esc(', '.join(ev.tainted_vars))}[/]"))
+    if ev.sanitizers:
+        rows.append(("Sanitizado", f"[green]{console.esc(', '.join(ev.sanitizers))}[/]"))
+    if ev.guards:
+        rows.append(("Guardas", console.esc(" · ".join(ev.guards))))
+    console.kv_panel("Traza", rows, border="magenta")
+
+    if ev.path:
+        console.info("\n[bold]Camino:[/]")
+        for step, node in enumerate(ev.path, start=1):
+            console.info(f"  {step}. {console.esc(node)}")
+
+
 def _render_finding(finding: Finding, rc: RootCause | None) -> None:
     """Renderiza el detalle de un hallazgo (y su root cause si existe)."""
     st = console.STATUS_STYLE.get(finding.status.value, "white")
@@ -238,6 +279,8 @@ def _render_finding(finding: Finding, rc: RootCause | None) -> None:
             ("Función", console.esc(finding.function or "—")),
         ],
     )
+
+    _render_evidence(finding)
 
     if finding.review_reason:
         console.warn(f"Necesita revisión: {console.esc(finding.review_reason)}")
