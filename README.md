@@ -34,10 +34,37 @@ Por cada vulnerabilidad confirmada produce:
 
 ### Tipos de aplicación soportados
 
-Web, binarios C/C++, firmware de routers, apps móviles y smart contracts. Lenguajes
-con definición builtin: Python, C, C++, JavaScript, TypeScript, Go, Java, Rust, PHP,
-Ruby y **Solidity** (smart contracts). Extensible a otros vía el sistema de plugins de
-lenguaje (`languages add/install/edit`).
+Web, binarios C/C++, firmware de routers, apps móviles y smart contracts.
+
+**15 lenguajes con definición builtin:** Python, C, C++, JavaScript, TypeScript, Go,
+Java, Rust, PHP, Ruby, Kotlin, Swift, C#, Bash/Shell y **Solidity**. Extensible a
+otros vía el sistema de plugins (`languages add/install/edit`).
+
+La **precisión del análisis depende del lenguaje**, y conviene saberlo antes de
+interpretar un resultado:
+
+| Camino | Lenguajes | Qué resuelve |
+|---|---|---|
+| **AST Python** (`ast` de la stdlib, siempre disponible) | Python | Alias de import (`import x as y`), `self.foo()`, `Clase.metodo()`, llamadas calificadas. Taint sensible a ramas, con sanitizadores y campos de instancia. |
+| **AST tree-sitter** (extra `treesitter`) | ~40, incluidos los 15 builtin | Funciones, métodos, clases y módulos con su nombre calificado. Llamadas resueltas en el archivo y por unicidad en el proyecto. Data flow aproximado por parámetro. |
+| **Fallback regex** | cuando no hay AST posible | Una arista si el nombre aparece invocado. No resuelve scope, alias ni imports. |
+
+### Qué modela (y qué no)
+
+HexFlaw construye tres tipos de arista sobre el código: **llamadas**, **flujo de
+datos** (qué variables viajan y si pasaron por un sanitizador) y **flujo de control**
+(qué condición guarda cada llamada).
+
+El flujo de datos es intra-procedural con enlace inter-procedural: dentro de cada
+función el taint se propaga por asignaciones; entre funciones se conecta por
+argumentos y por el valor de retorno. Es una **sobre-aproximación deliberada** — se
+asume que los parámetros de toda función son controlables, y la alcanzabilidad real
+la decide la topología del grafo.
+
+**No** hay CFG de bloques básicos, ni análisis de alias de objetos
+(`otro = self; otro.cmd` no se sigue), ni sensibilidad al camino: las condiciones se
+registran, no se evalúan. **No es un análisis sound**, y por eso el veredicto final
+lo da el LLM sobre el código, no el grafo.
 
 ---
 
@@ -46,21 +73,36 @@ lenguaje (`languages add/install/edit`).
 Requiere **Python 3.11+**.
 
 ```bash
+pip install hexflaw
+```
+
+Eso alcanza para el pipeline completo, pero con fallbacks: **sin el extra
+`treesitter`, todo lenguaje que no sea Python cae al análisis por regex** — Python
+usa el `ast` de la stdlib y no necesita nada. Para análisis real, instalá los extras:
+
+```bash
+pip install "hexflaw[embeddings,treesitter,pdf,secrets]"
+```
+
+| Extra | Qué habilita | Sin él |
+|---|---|---|
+| `treesitter` | AST preciso en ~40 lenguajes | Solo Python tiene AST; el resto va por regex |
+| `embeddings` | Embeddings neuronales locales (sentence-transformers) | Fallback por hashing, ranking semántico más pobre |
+| `secrets` | API keys en el keyring del SO | Caen a `~/.hexflaw/config.json` (600) con advertencia |
+| `pdf` | `report --format pdf` (weasyprint) | Markdown, JSON y SARIF siguen disponibles |
+| `tui` | Interfaz TUI (Textual) | — |
+| `openai` | Backend LLM alternativo | — |
+| `dev` | Tests, linters, tooling de release | — |
+
+Para trabajar sobre el código:
+
+```bash
 git clone https://github.com/Secure-Hex/HexFlaw.git hexflaw && cd hexflaw
-
-# Runtime base (suficiente para el pipeline completo, con fallbacks locales)
-pip install -e .
-
-# Con backends pesados opcionales (recomendado para calidad real):
-#   embeddings  -> sentence-transformers (embeddings neuronales locales)
-#   treesitter  -> parsing AST preciso multi-lenguaje
-#   pdf         -> exportar reportes a PDF (weasyprint)
-#   secrets     -> keyring del SO para almacenar API keys fuera de disco
-#   openai      -> backend LLM alternativo (OpenAI)
-#   tui         -> interfaz TUI (Textual)
-#   dev         -> tests + linters
 pip install -e ".[embeddings,treesitter,pdf,secrets,dev]"
 ```
+
+Opcional: `hexflaw graph --format dot` produce Graphviz. Para renderizarlo a
+imagen hace falta el binario: `apt install graphviz` (o `brew install graphviz`).
 
 ### API key del LLM
 
@@ -157,6 +199,7 @@ findings/ + reports/ + poc/
 | `poc` | PoCs de confirmados (M6a→M6c) | — |
 | `run <fuente>` | Pipeline completo de una vez (acepta directorio/zip/git/url) | `--target`, `--format markdown\|pdf\|json\|sarif` |
 | `status` | Estado del proyecto y artefactos | — |
+| `graph` | Inspecciona o exporta el code graph (M3) | `--format tree\|paths\|dot\|mermaid\|json`, `--node`, `--depth`, `--edges`, `--only-flows` |
 | `config` | Ver/editar configuración (las API keys van al keyring) | `--show`, `--embedding-backend`, `--api-key`, `--token-budget` |
 | `findings list` | Lista hallazgos | `--status`, `--run` |
 | `findings show <ID>` | Detalle de un hallazgo (snippet, razonamiento, taint path) | `--run` |
@@ -180,6 +223,44 @@ findings/ + reports/ + poc/
   tamaño de batch, el tope de chunks y qué modelo se usa por tarea.
 - **`--budget N`** — tope duro de tokens para ese análisis. Al alcanzarlo, M4 se detiene
   sin sorpresas de costo.
+- **`--exhaustive`** — máxima cobertura: analiza **todo** el codebase sin prefiltro de
+  sinks, sin límite de scope y con el modelo más capaz en todas las tareas. Es el modo
+  más lento y caro; usalo cuando el costo no sea la restricción.
+- **`--hunt-variants` / `--no-hunt-variants`** — tras confirmar un hallazgo, busca sus
+  vecinos en el espacio de embeddings y los re-analiza aunque el scope los hubiera
+  descartado. Sirve para el patrón "el mismo bug copiado en cinco endpoints". Activo
+  por defecto, salvo en `--mode economy` o `--exhaustive` (ahí ya se analizó todo).
+
+#### Ver el code graph
+
+```bash
+hexflaw graph                    # árbol navegable en la terminal
+hexflaw graph -f paths           # caminos entry point → sink
+hexflaw graph -f dot -o g.dot    # Graphviz:  dot -Tsvg g.dot > g.svg
+hexflaw graph -f mermaid         # pegable en Markdown/GitHub
+hexflaw graph -n handler -d 3    # vecindario de un nodo, 3 saltos
+hexflaw graph --only-flows       # solo lo que participa de un camino entry→sink
+```
+
+La vista **`paths`** es la que responde la pregunta que importa: por dónde entra el
+input y cómo llega al sink. Ordena primero los caminos sin sanitizar y anota en cada
+salto qué variables viajan y qué condición lo guarda:
+
+```
+[1] SIN SANITIZAR
+    1. src/api.py::handle_ping
+       |  target (sin sanitizar) · solo if mode == 'fast'
+    2. src/api.py::run_ping
+
+[2] sanitizado
+    1. src/api.py::handle_ping
+       |  host (sanitizado)
+    2. src/api.py::run_safe
+```
+
+Un grafo completo de un codebase real es ilegible en cualquier formato — el de
+HexFlaw tiene ~550 nodos. Por eso `--node`, `--depth`, `--edges` y `--only-flows` no
+son un lujo: son lo que hace útil la visualización.
 
 ### 3.4 Estados de un hallazgo
 
@@ -350,12 +431,16 @@ entre modelos y nunca deja el análisis vacío.
 
 El **code graph** es un modelo del programa como grafo dirigido:
 
-- **Nodos** = funciones / métodos / clases.
+- **Nodos** = funciones, métodos, clases y módulos, cada uno con su tipo real.
 - **Aristas `calls`** = quién llama a quién.
-- **Entry points** = nodos que reciben input controlable (matchean patrones tipo
-  `main`, handlers HTTP, lectura de `argv`/`recv`).
-- **Sinks** = nodos que contienen operaciones peligrosas (`system`, `exec`, `strcpy`,
-  queries SQL, escritura de archivos…), cada uno con su tipo (`command_execution`,
+- **Aristas `data_flow`** = qué datos llegan de A a B, con las variables que viajan y
+  si pasaron por un sanitizador. Incluye el retorno: el valor que devuelve el callee
+  genera una arista de vuelta al caller.
+- **Aristas `control_flow`** = llegar a B depende de una condición, con el texto de la
+  guarda (`if mode == 'admin'`).
+- **Entry points** = nodos que reciben input controlable, detectados por el nombre real
+  del símbolo y sus decoradores (`@app.route`), no por buscar texto en el chunk.
+- **Sinks** = operaciones peligrosas, cada una con su tipo (`command_execution`,
   `memory_write`, …).
 
 **Por qué lo construimos.** Detectar un sink no alcanza. La pregunta de seguridad es:
@@ -363,18 +448,42 @@ El **code graph** es un modelo del programa como grafo dirigido:
 **alcanzabilidad en un grafo**: ¿existe un camino desde un entry point hasta el sink? El
 code graph es lo que permite responder esa pregunta (en M5), en vez de adivinar.
 
-**Cómo se construye.** A partir de los chunks de M1, una pasada heurística: un nodo por
-chunk; una arista A→B si el nombre de B aparece invocado (`B(`) dentro del cuerpo de A.
-La detección de aristas extrae los call-sites de cada chunk **una sola vez** y los cruza
-contra el conjunto de funciones conocidas — **O(call-sites)**, no O(chunks × funciones).
-Esto importa: el enfoque ingenuo es cuadrático y se cuelga en codebases grandes (decenas
-de miles de funciones). Medido: ~0.7 s para construir el grafo de ~15.000 nodos / ~61.000
-aristas.
+**Cómo se construye.** Por AST, no por texto. En Python con el módulo `ast` de la
+stdlib; en el resto de lenguajes con tree-sitter cuando la grammar está instalada. Eso
+permite resolver lo que un regex no puede:
 
-**Caché con integridad.** El grafo se persiste con un hash SHA-256. Si el código no
-cambió, M3 no se re-ejecuta: se carga de disco. Si el artefacto fue manipulado
-externamente (el hash no coincide), se regenera. Es el artefacto más crítico del pipeline,
-así que su integridad se verifica explícitamente.
+```python
+import subprocess as sp
+from os import system as syscmd
+
+def run(cmd):
+    sp.run(cmd, shell=True)   # se resuelve a subprocess.run → sink
+    syscmd(cmd)               # se resuelve a os.system      → sink
+```
+
+Un regex buscando `subprocess` no encuentra ninguno de los dos: el texto dice `sp.run`
+y `syscmd`. Y al revés, el match por substring marcaba `self.execute(...)` como sink de
+`exec` y `sp.Popen(...)` como sink de `open(`. La comparación es por segmentos del
+nombre **resuelto** de la llamada, así que ninguno de esos falsos positivos sobrevive.
+
+**Ante la duda, no se emite arista.** Si dos archivos definen `handler` y la llamada no
+se puede atribuir con confianza, no se liga. Una arista inventada es peor que una
+faltante: le hace creer a M5 que existe un camino que no existe. M5 ya trata la ausencia
+de camino como "grafo incompleto", nunca como prueba de que no hay vulnerabilidad.
+
+**Rendimiento.** El fallback regex extrae los call-sites de cada chunk una sola vez y
+los cruza contra las funciones conocidas — **O(call-sites)**, no O(chunks × funciones);
+el enfoque ingenuo es cuadrático y se cuelga en codebases grandes. Medido: ~0.7 s para
+un grafo de ~15.000 nodos / ~61.000 aristas.
+
+**Caché con integridad y versión.** El grafo se persiste con un hash SHA-256; si el
+código no cambió, M3 no se re-ejecuta. Si el artefacto fue manipulado externamente, se
+regenera. Además guarda la **versión del schema**: cuando cambia el algoritmo con que se
+construye, los grafos viejos se descartan aunque el código sea idéntico. Sin eso, un
+proyecto ya analizado se quedaría para siempre con un grafo hecho por el algoritmo
+anterior y M5 razonaría peor sin que nada lo indicara.
+
+Para verlo: `hexflaw graph` (§3.3).
 
 ### 4.6 M4 — Static Analysis: gastar tokens con cuidado
 
@@ -552,8 +661,14 @@ preliminar de M4:
    enumeración de todos los caminos porque enumerar *explota exponencialmente* en grafos
    reales (medido en la versión ingenua: >15 s por sink, hasta colgarse; con BFS: ~0.9 ms
    por sink). La detección de ciclos es implícita en el `visited` del BFS.
-3. **Confirma con el LLM**: le da el camino (o, si el grafo heurístico no encontró uno, el
-   código de la propia función) y le pide clasificar.
+
+   Se **prefiere el camino de flujo de datos**, que prueba que el dato del atacante llega
+   al sink, y no solo que el sink es alcanzable. Si no existe, se cae al camino de llamadas
+   y se le dice explícitamente al LLM que eso *no* es evidencia de flujo.
+3. **Confirma con el LLM**: le da el camino (o, si no hay ninguno, el código de la propia
+   función) y le pide clasificar. Cada salto va anotado con lo que el grafo sabe —qué
+   variables entran, si venían sanitizadas, qué condición lo guarda— **antes** de la
+   interpretación del LLM, para que el reporte distinga evidencia de razonamiento.
 
 > **Decisión de diseño — no auto-descartar por grafo incompleto.** El call graph es
 > heurístico (no resuelve dispatch dinámico ni llamadas cross-file complejas). Una versión
