@@ -21,6 +21,22 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.0.1 (2026-07-30)
+
+### Bug Fixes
+
+- **chunking**: Type the tree-sitter parser as Any across both bindings
+  ([`8935d6d`](https://github.com/Secure-Hex/HexFlaw/commit/8935d6d1b852cb44bc6a24303129184b8826026f))
+
+### Continuous Integration
+
+- Add a bootstrap path to publish the current version
+  ([`630ad16`](https://github.com/Secure-Hex/HexFlaw/commit/630ad16819ab3e30986ac422617131896abab9e4))
+
+- Pin the ruff rule set instead of inheriting version defaults
+  ([`00e44e3`](https://github.com/Secure-Hex/HexFlaw/commit/00e44e3f524bf9e8bdde5b4aa572a97d250c5426))
+
+
 ## v1.0.0 (2026-07-30)
 
 Primer release completo. Punto de adopción de versionado y changelog
