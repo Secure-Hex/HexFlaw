@@ -1,0 +1,81 @@
+name: Release to PyPI
+
+# Publica al pushear un tag de versión (v0.2.0, v1.0.0...).
+#
+# Usa Trusted Publishing (OIDC): no hay token de PyPI guardado en el repo ni en
+# los secrets. Requiere configurarlo UNA VEZ en PyPI:
+#   https://pypi.org/manage/project/hexflaw/settings/publishing/
+#   owner: Secure-Hex · repo: HexFlaw · workflow: release.yml · environment: pypi
+#
+# Antes de publicar corre la suite completa, ruff y mypy: un release que no pasa
+# sus propias verificaciones no sale.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Se verifica en el mínimo declarado (requires-python) y en el más nuevo:
+        # el piso es el que rompe cuando se usa sintaxis moderna sin querer.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install -e '.[dev,treesitter]'
+      - name: Lint
+        run: ruff check .
+      - name: Type check
+        run: mypy hexflaw tests
+      - name: Tests
+        run: pytest -q
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+      - name: Verificar que el tag coincide con la versión del paquete
+        # Sin esto se puede publicar 0.2.0 bajo el tag v0.3.0 y quedar con el
+        # historial mintiendo, que después no se puede arreglar: PyPI no permite
+        # re-subir una versión.
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(ls dist/*.tar.gz | sed -E 's/.*hexflaw-(.*)\.tar\.gz/\1/')
+          echo "tag=$TAG paquete=$PKG"
+          test "$TAG" = "$PKG" || { echo "::error::el tag no coincide con la versión"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # requerido por Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

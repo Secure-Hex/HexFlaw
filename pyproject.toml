@@ -4,13 +4,30 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hexflaw"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-powered source code vulnerability analyzer — by SecureHex"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-only" }
 authors = [{ name = "SecureHex", email = "contacto@securehex.cl" }]
 keywords = ["security", "sast", "vulnerability", "llm", "static-analysis"]
+# Sin clasificador de licencia: ya se declara arriba y PyPI rechaza la duplicación
+# cuando la licencia va como expresión SPDX (Metadata-Version 2.4).
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
 
 dependencies = [
     "typer>=0.12.0",
@@ -40,6 +57,12 @@ dev = [
     "mypy>=1.9",
     "ruff>=0.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Secure-Hex/HexFlaw"
+Repository = "https://github.com/Secure-Hex/HexFlaw"
+Issues = "https://github.com/Secure-Hex/HexFlaw/issues"
+Security = "https://github.com/Secure-Hex/HexFlaw/blob/main/SECURITY.md"
 
 [project.scripts]
 hexflaw = "hexflaw.cli.main:app"
