@@ -73,6 +73,17 @@ _VULN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "xss": (
         "innerhtml", "v-html", "dangerouslysetinnerhtml", "document.write",
         "echo", "print(", "render", "html(", "|safe", "|raw",
+        # Servlets Java: la lista de arriba es toda de idioms JS/PHP y no matcheaba
+        # NADA de un servlet. Medido contra el OWASP Benchmark: 115/246 casos de xss
+        # se perdían por esto (recall 53%). Es el mismo error que ya se había
+        # cometido con Node y está documentado más arriba.
+        "getwriter", "getoutputstream", "setheader", "addheader",
+        "sendredirect", "addcookie", "jspwriter",
+    ),
+    # CWE-501: dato no confiable guardado en un store de confianza (sesión).
+    "trust_boundary": (
+        "getsession", "setattribute", "putvalue", "session[", "$_session",
+        "request.session", "httpsession",
     ),
 }
 
@@ -129,6 +140,7 @@ def analyze(
     sink_rescue_hops: int = 2,
     semantic_rescue_threshold: float = 0.22,
     semantic_rescue_max: int = 25,
+    semantic_rescue_fraction: float = 0.10,
     on_status: "Callable[[str], None] | None" = None,
     coverage: dict[str, Any] | None = None,
 ) -> FindingSet:
@@ -156,8 +168,11 @@ def analyze(
             0 desactiva el rescate.
         semantic_rescue_threshold: Similitud coseno mínima para rescatar un chunk
             que ninguna keyword vio. Alto a propósito: es el rescate más difuso.
-        semantic_rescue_max: Tope duro de chunks rescatados por similitud. 0 lo
-            desactiva.
+        semantic_rescue_max: **Piso** del presupuesto de rescate, para que en
+            proyectos chicos la capa 3 exista. 0 la desactiva junto con la fracción.
+        semantic_rescue_fraction: Fracción de los chunks ya aceptados que la capa 3
+            puede sumar. El tope efectivo es ``max(piso, fracción × aceptados)``:
+            un tope absoluto queda mal en los dos extremos (ver ``_rescue_budget``).
         on_status: Callback opcional para reportar sub-fases (observabilidad CLI).
 
     Returns:
@@ -183,7 +198,9 @@ def analyze(
             target,
             embedding,
             threshold=semantic_rescue_threshold,
-            max_rescued=semantic_rescue_max,
+            max_rescued=_rescue_budget(
+                len(relevant), semantic_rescue_max, semantic_rescue_fraction
+            ),
         )
         logger.info(
             "M4 capa 1 (keyword): %d/%d chunks", len(relevant), len(ingestion.chunks)
@@ -337,14 +354,44 @@ _VULN_QUERIES: dict[str, str] = {
     ),
     "xss": (
         "element.innerHTML = value\n"
-        "response.write(html)\n"
+        "response.getWriter().print(param)\n"
+        "response.setHeader(name, value)\n"
         "render_template_string(template)"
+    ),
+    "trust_boundary": (
+        "request.getSession().setAttribute(key, value)\n"
+        "session[key] = untrusted\n"
+        "httpSession.putValue(name, param)"
     ),
     "buffer_overflow": (
         "strcpy(dest, src);\nmemcpy(buf, data, len);\nsprintf(buf, fmt, arg);"
     ),
     "format_string": "printf(user_input);\nfprintf(f, fmt);\nsnprintf(b, n, fmt);",
 }
+
+
+def _rescue_budget(kept: int, floor: int, fraction: float) -> int:
+    """Cuántos chunks puede rescatar la capa 3, en función de lo que ya se analiza.
+
+    Un tope **absoluto** no sirve: 25 chunks son razonables en un proyecto chico y
+    despreciables en uno grande. Medido contra el OWASP Benchmark (13.691 chunks),
+    un tope de 25 aportaba +0,3 puntos de recall — el rescate funcionaba pero el
+    tope lo anulaba.
+
+    El presupuesto se ata a lo que el prefiltro ya dejó pasar, porque eso es la
+    base de costo real: la capa 3 puede agregar como mucho un ``fraction`` de eso.
+    Así el sobrecosto máximo es predecible y proporcional, en vez de una constante
+    que queda mal en los dos extremos.
+
+    Args:
+        kept: Chunks que ya sobrevivieron a las capas 0-2.
+        floor: Piso absoluto, para que en proyectos chicos el rescate exista.
+        fraction: Fracción de ``kept`` que la capa 3 puede sumar.
+
+    Returns:
+        Tope efectivo de chunks a rescatar.
+    """
+    return max(floor, int(kept * fraction))
 
 
 def _semantic_rescue(
@@ -638,6 +685,7 @@ def _prefilter(
     sink_rescue_hops: int = 2,
     semantic_rescue_threshold: float = 0.22,
     semantic_rescue_max: int = 25,
+    semantic_rescue_fraction: float = 0.10,
 ) -> list[CodeChunk]:
     """Capa 1 — filtro keyword (costo cero) sobre el vuln_profile activo.
 

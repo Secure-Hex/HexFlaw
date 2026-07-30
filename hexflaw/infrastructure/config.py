@@ -87,7 +87,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # rescates de más subilo, y si se pierden hallazgos bajalo. El tope acota el
     # costo: los chunks se ordenan por score y solo entran los mejores.
     "m4_semantic_rescue_threshold": 0.22,
+    # El tope de la capa 3 es max(piso, fracción × chunks ya aceptados). Un tope
+    # absoluto queda mal en los dos extremos: medido contra el OWASP Benchmark
+    # (13.691 chunks), un tope fijo de 25 aportaba +0,3 puntos de recall — el
+    # rescate funcionaba pero el tope lo anulaba. Atarlo a lo ya aceptado hace que
+    # el sobrecosto máximo sea predecible: nunca más de un 10% extra.
     "m4_semantic_rescue_max": 25,
+    "m4_semantic_rescue_fraction": 0.10,
     # --- Modo exhaustive ------------------------------------------------- #
     # Analiza TODO el codebase sin prefiltro de sinks, sin límite de scope y con
     # Opus en todas las tareas. Lo activa 'analyze --exhaustive'; acá queda

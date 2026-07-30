@@ -340,6 +340,9 @@ class Orchestrator:
                     "m4_semantic_rescue_threshold", 0.22
                 ),
                 semantic_rescue_max=self.config.get("m4_semantic_rescue_max", 25),
+                semantic_rescue_fraction=self.config.get(
+                    "m4_semantic_rescue_fraction", 0.10
+                ),
                 on_status=self._set_detail,
                 coverage=self.last_coverage,
             )

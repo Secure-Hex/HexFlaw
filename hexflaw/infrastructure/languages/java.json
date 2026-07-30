@@ -10,11 +10,13 @@
     "mobile"
   ],
   "vuln_profile": [
-    "sql_injection",
     "command_injection",
     "deserialization",
     "path_traversal",
+    "sql_injection",
     "ssrf",
+    "trust_boundary",
+    "xss",
     "xxe"
   ],
   "entry_point_patterns": [
@@ -27,16 +29,24 @@
     "getParameter"
   ],
   "sink_patterns": [
-    "Runtime.getRuntime().exec",
+    "DocumentBuilder",
+    "FileInputStream",
+    "ObjectInputStream",
     "ProcessBuilder",
+    "Runtime.getRuntime().exec",
+    "addCookie",
     "createStatement",
     "executeQuery",
     "executeUpdate",
-    "ObjectInputStream",
-    "readObject",
+    "getOutputStream",
+    "getSession",
+    "getWriter",
     "new File",
-    "FileInputStream",
-    "DocumentBuilder"
+    "putValue",
+    "readObject",
+    "sendRedirect",
+    "setAttribute",
+    "setHeader"
   ],
   "notes": "Revisar Runtime.exec/ProcessBuilder, Statement sin PreparedStatement, ObjectInputStream.readObject (deserialización) y parsers XML sin protección XXE.",
   "sink_models": [

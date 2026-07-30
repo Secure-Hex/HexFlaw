@@ -266,3 +266,23 @@ def test_semantic_rescue_needs_a_known_vuln_class() -> None:
     target = TargetDefinition(target_confirmed="t", vuln_profile=["clase_inventada"])
 
     assert _semantic_rescue(chunks, target, embedding, threshold=0.22, max_rescued=25) == []
+
+
+def test_rescue_budget_scales_with_the_accepted_set() -> None:
+    """Un tope absoluto queda mal en los dos extremos.
+
+    Medido contra el OWASP Benchmark (13.691 chunks): un tope fijo de 25 aportaba
+    +0,3 puntos de recall — el rescate funcionaba pero el tope lo anulaba.
+    """
+    from hexflaw.modules.m4_static import _rescue_budget
+
+    assert _rescue_budget(50, floor=25, fraction=0.10) == 25  # proyecto chico: piso
+    assert _rescue_budget(6610, floor=25, fraction=0.10) == 661  # grande: proporción
+
+
+def test_rescue_budget_never_goes_below_the_floor() -> None:
+    """En un proyecto muy chico la capa 3 tiene que seguir existiendo."""
+    from hexflaw.modules.m4_static import _rescue_budget
+
+    assert _rescue_budget(1, floor=25, fraction=0.10) == 25
+    assert _rescue_budget(0, floor=25, fraction=0.10) == 25

@@ -25,28 +25,34 @@ python benchmarks/owasp/prefilter_recall.py --max-rescued 25   # el default real
 
 | Configuración | Recall | Chunks al LLM |
 |---|---|---|
-| Capas 0-2 | 89,3% | 4466 |
-| + capa 3, tope 25 (default de producción) | 89,6% | 4491 |
-| + capa 3 sin tope (techo del método) | **100%** | 8810 |
+| Antes de los arreglos, capas 0-2 | 89,3% | 4466 |
+| Antes, + capa 3 con tope fijo de 25 | 89,6% | 4491 |
+| Antes, + capa 3 sin tope (techo del método) | 100% | 8810 |
+| **Después de los arreglos, capas 0-2** | **100%** | 6610 |
 
-Dos conclusiones incómodas y accionables:
+La medición encontró dos defectos, los dos ya corregidos:
 
-1. **El tope por defecto de la capa 3 (25) aporta +0,3 puntos** en un corpus de este
-   tamaño. Es un valor absoluto sobre un corpus de 13.691 chunks: el rescate
-   semántico funciona (llega al 100% sin tope) pero el tope lo anula. Debería
-   escalar con el tamaño del corpus, no ser una constante.
-2. **Los 147 fallos se concentran en dos categorías**, y la causa es de cobertura,
-   no del método:
+1. **El `vuln_profile` de Java no incluía `xss` ni `trust_boundary`**, y la lista de
+   keywords de `xss` era toda de idioms JS/PHP (`innerhtml`, `echo`, `|safe`). El XSS
+   de servlet (`response.getWriter().format(param)`) no matcheaba nada:
 
-   | Categoría | Recall | ¿En el `vuln_profile` de Java? |
+   | Categoría | Recall antes | ¿Estaba en el perfil? |
    |---|---|---|
    | `xss` | 53,3% | **NO** |
    | `trustbound` | 55,4% | **NO** |
    | las otras 9 | 100% | — |
 
-   El XSS de servlet Java (`response.getWriter().format(param)`) no matchea ninguna
-   keyword: la lista de `xss` es toda de idioms JS/PHP (`innerhtml`, `echo`,
-   `|safe`). Y `xss` ni siquiera está en el `vuln_profile` de `java.json`.
+   Es el mismo error que ya se había cometido con Node y que un comentario del código
+   documenta. Volvió a pasar con otro lenguaje: **una lista de keywords se degrada en
+   silencio cada vez que se agrega un lenguaje sin revisarla.** Agregar los idioms de
+   servlet llevó el recall de 89,3% a 100% sin tocar la capa 3. Costo: +48% de chunks
+   al LLM (4466 → 6610), que es lo que vale cubrir 2 categorías más.
+
+2. **El tope de la capa 3 era absoluto (25)** y aportaba +0,3 puntos sobre 13.691
+   chunks: el rescate funcionaba —llegaba al 100% sin tope— pero el tope lo anulaba.
+   Ahora es `max(piso, fracción × chunks ya aceptados)`, con piso 25 y fracción 0,10.
+   El sobrecosto máximo pasa a ser predecible y proporcional en vez de una constante
+   que queda mal en los dos extremos.
 
 ### Layout
 
