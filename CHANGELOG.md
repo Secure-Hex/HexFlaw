@@ -21,6 +21,14 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.2.0 (2026-07-30)
+
+### Features
+
+- **m3**: Infer local variable types to resolve call receivers
+  ([`d3ebb89`](https://github.com/Secure-Hex/HexFlaw/commit/d3ebb89e592a1af355d302df12a7fef677885cd8))
+
+
 ## v1.1.0 (2026-07-30)
 
 ### Features
