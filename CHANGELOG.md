@@ -21,6 +21,24 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.4.1 (2026-07-30)
+
+### Bug Fixes
+
+- **m4**: Cover Java XSS/trust-boundary idioms and scale the rescue budget
+  ([`557de66`](https://github.com/Secure-Hex/HexFlaw/commit/557de66fba4dde642306bc68c65a3ab205c7756a))
+
+### Documentation
+
+- Document the four prefilter layers in the README
+  ([`53cc2a8`](https://github.com/Secure-Hex/HexFlaw/commit/53cc2a824feef4e450bb84198a4bdac607237ff2))
+
+### Testing
+
+- **benchmarks**: Add a free prefilter-recall harness and measure it
+  ([`899dfed`](https://github.com/Secure-Hex/HexFlaw/commit/899dfed65090e467d75c6e2a54e3c4fa1cd23f5a))
+
+
 ## v1.4.0 (2026-07-30)
 
 ### Features
