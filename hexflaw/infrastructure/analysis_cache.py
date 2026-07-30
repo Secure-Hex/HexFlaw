@@ -42,18 +42,33 @@ class AnalysisCache:
                 self._data = {}
 
     @staticmethod
-    def make_key(chunk_hash: str, model: str, vuln_profile: list[str]) -> str:
-        """Construye la clave de caché combinando chunk, modelo y perfil.
+    def make_key(
+        chunk_hash: str,
+        model: str,
+        vuln_profile: list[str],
+        prompt_version: int = 1,
+    ) -> str:
+        """Construye la clave de caché combinando chunk, modelo, perfil y prompt.
+
+        ``prompt_version`` es imprescindible: la respuesta cacheada depende tanto
+        del código como de **lo que se le preguntó al modelo**. Cuando el prompt
+        de M4 cambia de forma material —por ejemplo al empezar a incluir el
+        contexto del grafo en la cabecera de cada chunk— las respuestas viejas
+        dejan de ser equivalentes, y sin versionar la clave un proyecto ya
+        analizado se quedaría con ellas para siempre.
 
         Args:
             chunk_hash: SHA-256 del texto del chunk.
             model: Modelo usado en el análisis.
             vuln_profile: Perfil de vulnerabilidades activo.
+            prompt_version: Versión del prompt que produjo la respuesta.
 
         Returns:
             Clave hexadecimal estable.
         """
-        material = f"{chunk_hash}|{model}|{','.join(sorted(vuln_profile))}"
+        material = (
+            f"{chunk_hash}|{model}|{','.join(sorted(vuln_profile))}|v{prompt_version}"
+        )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     def get(self, key: str) -> list[dict[str, Any]] | None:

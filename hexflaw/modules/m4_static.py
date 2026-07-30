@@ -25,6 +25,7 @@ from hexflaw.core.models import (
     Finding,
     FindingSet,
     FindingStatus,
+    GraphNode,
     IngestionResult,
     TargetDefinition,
 )
@@ -109,6 +110,17 @@ _EXHAUSTIVE_CACHE_PROFILE = ["__exhaustive__"]
 #: hash sigue activo siempre.
 _DEDUP_THRESHOLD = 0.95
 
+#: Versión del prompt de M4. **Subirla cuando cambie de forma material lo que se
+#: le pregunta al modelo**, no solo cuando se corrija una palabra. Entra en la
+#: clave del caché de análisis: sin eso, un proyecto ya analizado reutilizaría
+#: respuestas producidas con un prompt peor, para siempre.
+#:
+#: Historial:
+#:   1 — cabecera '### FILE / FUNC' a secas.
+#:   2 — cabecera con rango de líneas y contexto del grafo (rol, flujo de datos
+#:       entrante/saliente, guardas), más la instrucción de no leer otros archivos.
+PROMPT_VERSION = 2
+
 _FINDINGS_INSTRUCTION = (
     "Analiza el siguiente código en busca ÚNICAMENTE de estas clases de "
     "vulnerabilidad: {vulns}. Para cada función sospechosa devuelve un objeto. "
@@ -117,7 +129,22 @@ _FINDINGS_INSTRUCTION = (
     '"function": "<nombre>", "confidence": <0..1>, "snippet": "<línea vulnerable>", '
     '"rationale": "<breve>"}}]}}\n'
     "Si no hay vulnerabilidades, devuelve {{\"findings\": []}}.\n"
-    "Cada chunk viene precedido por una cabecera '### FILE: <archivo> FUNC: <nombre>'."
+    "\n"
+    "Cada chunk viene precedido por una cabecera con líneas '###':\n"
+    "  ### FILE: <archivo> FUNC: <nombre> LINES: <inicio>-<fin>\n"
+    "  ###   ROL: entry point | SINK: <clases>\n"
+    "  ###   ENTRA: <vars> desde <función> (SIN SANITIZAR|SANITIZADO)\n"
+    "  ###   SALE: <vars> hacia <función> (…) ; llamada a <f> solo si <condición>\n"
+    "\n"
+    "Esas líneas las derivó el análisis de grafo del propio pipeline: son datos "
+    "verificados sobre alcanzabilidad y flujo, no suposiciones. Usalas y NO salgas "
+    "a leer otros archivos: todo lo que necesitás para decidir está acá.\n"
+    "- 'line' debe ser el número ABSOLUTO en el archivo. El chunk empieza en la "
+    "línea <inicio> de LINES, así que contá desde ahí; no lo estimes.\n"
+    "- 'ENTRA ... SIN SANITIZAR' es evidencia fuerte de dato controlable; "
+    "'SANITIZADO' es evidencia en contra.\n"
+    "- Que un chunk no sea 'entry point' no lo vuelve seguro: el grafo es "
+    "incompleto por construcción."
 )
 
 
@@ -268,7 +295,7 @@ def analyze(
         notify(f"M4 · análisis LLM · batch {batch_idx}/{total_batches}")
         prompt = _FINDINGS_INSTRUCTION.format(vulns=prompt_vulns)
         code_blob = "\n\n".join(
-            f"### FILE: {c.file} FUNC: {c.name}\n{c.code}" for c in batch
+            f"{_chunk_header(c, graph)}\n{c.code}" for c in batch
         )
         try:
             response = llm.analyze_code(
@@ -368,6 +395,102 @@ _VULN_QUERIES: dict[str, str] = {
     ),
     "format_string": "printf(user_input);\nfprintf(f, fmt);\nsnprintf(b, n, fmt);",
 }
+
+
+#: Largo máximo de un dato del código analizado que se interpola en la cabecera.
+#: El nombre de una función y el texto de una condición vienen del código del
+#: cliente, o sea de entrada no confiable: se truncan y se les sacan los saltos de
+#: línea para que no puedan falsificar una cabecera ni inflar el prompt (T-M4-1).
+_HEADER_FIELD_MAX = 80
+
+
+def _safe_field(value: str) -> str:
+    """Normaliza un dato del código analizado para interpolarlo en la cabecera."""
+    return " ".join(str(value).split())[:_HEADER_FIELD_MAX]
+
+
+def _chunk_header(chunk: CodeChunk, graph: CodeGraph | None) -> str:
+    """Cabecera del chunk con el rango de líneas y lo que el grafo ya sabe de él.
+
+    Antes la cabecera era solo ``### FILE: x FUNC: y``, y eso dejaba al LLM sin
+    poder responder dos cosas que el pipeline **ya tenía calculadas**:
+
+    - *¿En qué línea estoy?* El prompt pide el número de línea absoluto, pero el
+      chunk empieza en un punto desconocido del archivo. El modelo tenía que
+      adivinarlo (o abrir el archivo, si el backend se lo permitía).
+    - *¿Esto es alcanzable? ¿De dónde viene el dato?* Sin el grafo, un chunk
+      aislado no permite decidirlo, y la respuesta honesta es "no puedo saberlo".
+
+    M3 corre antes que M4 y tiene las dos respuestas. Ponerlas acá evita que el
+    LLM tenga que salir a leer el repo: además de caro y difuso, eso rompe la
+    reproducibilidad y le miente al caché, que indexa por hash del chunk.
+
+    Args:
+        chunk: Chunk a describir.
+        graph: Code graph de M3. Si es ``None``, solo se anota el rango de líneas.
+
+    Returns:
+        Una o más líneas ``###`` que preceden al código del chunk.
+    """
+    header = (
+        f"### FILE: {chunk.file} FUNC: {chunk.name} "
+        f"LINES: {chunk.line_start}-{chunk.line_end}"
+    )
+    if graph is None:
+        return header
+
+    node = next((n for n in graph.nodes if n.id == chunk.id), None)
+    if node is None:
+        return header
+
+    roles: list[str] = []
+    if node.is_entry_point:
+        roles.append("entry point (recibe input controlable)")
+    sink_types = sorted({s.sink_type for s in graph.sinks if s.node_id == chunk.id})
+    if sink_types:
+        roles.append(f"SINK: {', '.join(sink_types)}")
+    if roles:
+        header += f"\n###   ROL: {'; '.join(roles)}"
+
+    by_id = {n.id: n for n in graph.nodes}
+    for line in _flow_notes(chunk.id, graph, by_id):
+        header += f"\n###   {line}"
+    return header
+
+
+def _flow_notes(
+    chunk_id: str, graph: CodeGraph, by_id: dict[str, GraphNode]
+) -> list[str]:
+    """Notas de flujo entrante y saliente del chunk, derivadas del grafo."""
+    incoming: list[str] = []
+    outgoing: list[str] = []
+    for edge in graph.edges:
+        if edge.type == EdgeType.DATA_FLOW and edge.data_vars:
+            state = "SANITIZADO" if edge.sanitized else "SIN SANITIZAR"
+            variables = _safe_field(", ".join(edge.data_vars))
+            if edge.to == chunk_id and edge.from_ in by_id:
+                origin = _safe_field(by_id[edge.from_].name)
+                incoming.append(f"{variables} desde {origin} ({state})")
+            elif edge.from_ == chunk_id and edge.to in by_id:
+                destination = _safe_field(by_id[edge.to].name)
+                outgoing.append(f"{variables} hacia {destination} ({state})")
+        elif (
+            edge.type == EdgeType.CONTROL_FLOW
+            and edge.from_ == chunk_id
+            and edge.condition
+            and edge.to in by_id
+        ):
+            outgoing.append(
+                f"llamada a {_safe_field(by_id[edge.to].name)} solo si "
+                f"{_safe_field(edge.condition)}"
+            )
+
+    notes: list[str] = []
+    if incoming:
+        notes.append(f"ENTRA: {'; '.join(incoming[:4])}")
+    if outgoing:
+        notes.append(f"SALE: {'; '.join(outgoing[:4])}")
+    return notes
 
 
 def _rescue_budget(kept: int, floor: int, fraction: float) -> int:
@@ -596,7 +719,9 @@ def _cache_get(
     """Recupera findings cacheados para un chunk, si hay caché."""
     if cache is None:
         return None
-    return cache.get(AnalysisCache.make_key(chunk.hash, model, vuln_profile))
+    return cache.get(
+        AnalysisCache.make_key(chunk.hash, model, vuln_profile, PROMPT_VERSION)
+    )
 
 
 def _cache_store(
@@ -619,7 +744,9 @@ def _cache_store(
         if chunk is not None:
             attributed[chunk.id].append(raw)
     for chunk in batch:
-        key = AnalysisCache.make_key(chunk.hash, model, vuln_profile)
+        key = AnalysisCache.make_key(
+            chunk.hash, model, vuln_profile, PROMPT_VERSION
+        )
         cache.set(key, attributed[chunk.id])
 
 
