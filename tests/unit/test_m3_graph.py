@@ -584,3 +584,82 @@ def test_sink_models_are_optional_and_backward_compatible() -> None:
         {"id": "x", "name": "X", "extensions": [".x"], "sink_patterns": ["system"]}
     )
     assert definition.sink_models == []
+
+
+# --------------------------------------------------------------------------- #
+# Inferencia de tipos locales
+# --------------------------------------------------------------------------- #
+def test_type_inference_resolves_a_parameter_receiver(tmp_path: Path) -> None:
+    """``st.executeQuery`` con ``st`` de tipo Statement → ``Statement.executeQuery``.
+
+    Es lo que hace utilizable el catálogo de sinks: casi todos los sinks de
+    métodos de instancia están catalogados por tipo, no por nombre de método.
+    """
+    graph = _java_graph(
+        tmp_path,
+        "import java.sql.*;\nclass Svc {\n"
+        '  void m(Statement st, String u){ st.executeQuery("SELECT " + u); }\n}',
+    )
+    tipos = {s.sink_type for s in graph.sinks}
+
+    assert "sql_query" in tipos, f"tipos detectados: {tipos}"
+
+
+def test_type_inference_resolves_a_local_declaration(tmp_path: Path) -> None:
+    """``Statement st = c.createStatement();`` declara el tipo explícitamente."""
+    graph = _java_graph(
+        tmp_path,
+        "import java.sql.*;\nclass Svc {\n"
+        "  void m(Connection c, String u) throws Exception {\n"
+        "    Statement st = c.createStatement();\n"
+        "    st.executeQuery(u);\n  }\n}",
+    )
+
+    assert any(s.sink_type == "sql_query" for s in graph.sinks)
+
+
+def test_type_inference_handles_implicit_var(tmp_path: Path) -> None:
+    """``var pb = new ProcessBuilder(...)`` saca el tipo del valor construido."""
+    from hexflaw.modules.chunking import ts_parse
+
+    source = "void m(String u){ var pb = new ProcessBuilder(u); pb.start(); }"
+    root = ts_parse(source, "java")
+    assert root is not None
+
+    types = m3_graph._ts_local_types(root, source.encode("utf-8"))
+
+    assert types.get("pb") == "ProcessBuilder"
+
+
+def test_type_inference_ignores_unresolvable_returns(tmp_path: Path) -> None:
+    """Un tipo que vendría del retorno de otra llamada NO se inventa.
+
+    ``var st = c.createStatement()`` necesitaría la firma de ``createStatement``.
+    Adivinarlo produciría sinks falsos, que es peor que no resolverlo.
+    """
+    from hexflaw.modules.chunking import ts_parse
+
+    source = "void m(Connection c){ var st = c.createStatement(); st.executeQuery(q); }"
+    root = ts_parse(source, "java")
+    assert root is not None
+
+    types = m3_graph._ts_local_types(root, source.encode("utf-8"))
+
+    assert "st" not in types
+
+
+def test_type_inference_applies_to_dotted_call_fields(tmp_path: Path) -> None:
+    """C#/Go/JS entregan la llamada como un path entero, no receptor + método.
+
+    Sin sustituir también ahí, la inferencia de tipos solo serviría para Java.
+    """
+    (tmp_path / "A.cs").write_text(
+        "class A {\n  void M(SqlHelper h, string q){ h.ExecuteReader(q); }\n}",
+        encoding="utf-8",
+    )
+    langs = LanguageService()
+    ingestion = m1_ingestion.ingest(tmp_path, "p", langs)
+    facts = m3_graph._ts_flow_facts(ingestion.chunks)
+    nombres = {call.name for f in facts.values() for call in f.calls}
+
+    assert "SqlHelper.ExecuteReader" in nombres, nombres

@@ -1170,11 +1170,12 @@ def _ts_collect_calls(
 ) -> list[_PyCall]:
     """Recorre el árbol acumulando las llamadas con su contexto de flujo."""
     calls: list[_PyCall] = []
+    types = _ts_local_types(root, source)
 
     def walk(node: object, guards: tuple[str, ...]) -> None:
         kind = _ts_kind(node)
         if kind in _TS_CALL_KINDS:
-            name = _ts_callee_name(node, source)
+            name = _ts_callee_name(node, source, types)
             if name:
                 arguments = _ts_argument_names(node, source)
                 shared = sorted(arguments & params)
@@ -1200,7 +1201,9 @@ def _ts_collect_calls(
 _TS_ARGUMENT_KINDS = ("argument", "call_suffix", "value_arguments")
 
 
-def _ts_callee_name(node: object, source: bytes) -> str:
+def _ts_callee_name(
+    node: object, source: bytes, types: dict[str, str] | None = None
+) -> str:
     """Nombre calificado del invocado en un nodo de llamada.
 
     Las grammars exponen esto de dos formas distintas:
@@ -1218,14 +1221,14 @@ def _ts_callee_name(node: object, source: bytes) -> str:
     method = _ts_field(node, "name")
     receiver = _ts_field(node, "object") or _ts_field(node, "receiver")
     if method is not None and receiver is not None:
-        base = _ts_receiver_name(receiver, source)
+        base = _ts_receiver_name(receiver, source, types)
         name = _ts_text(method, source).strip()
         return f"{base}.{name}" if base else name
 
     for field_name in ("function", "name", "method", "constructor"):
         target = _ts_field(node, field_name)
         if target is not None:
-            return _ts_text(target, source).strip()
+            return _substitute_receiver(_ts_text(target, source).strip(), types)
     for child in _ts_children(node):
         kind = _ts_kind(child)
         if any(marker in kind for marker in _TS_ARGUMENT_KINDS):
@@ -1236,22 +1239,130 @@ def _ts_callee_name(node: object, source: bytes) -> str:
     return ""
 
 
-def _ts_receiver_name(node: object, source: bytes) -> str:
+#: Nodos que declaran una variable con su tipo. El tipo va en el campo ``type`` y
+#: el nombre en el ``name`` del propio nodo o de su declarador.
+_TS_TYPED_DECLS = (
+    "formal_parameter",
+    "parameter",
+    "local_variable_declaration",
+    "variable_declaration",
+    "field_declaration",
+    "catch_formal_parameter",
+    "var_declaration",
+    "var_spec",
+)
+
+#: Tipos "implícitos": el tipo real hay que sacarlo del valor asignado.
+_TS_IMPLICIT_TYPES = frozenset({"var", "auto", "let", "const", "dynamic", "final"})
+
+
+def _ts_local_types(root: object, source: bytes) -> dict[str, str]:
+    """Mapa ``variable → tipo`` de las declaraciones visibles en el chunk.
+
+    Es lo que permite que el catálogo de sinks sirva de verdad. Sin esto, un
+    ``st.executeQuery(...)`` deja el receptor en ``st`` y no matchea contra
+    ``Statement.executeQuery``, que es la forma en que están catalogados casi
+    todos los sinks de métodos de instancia.
+
+    Cubre parámetros (``void m(Statement st)``) y locales
+    (``Statement st = ...``), incluido el tipo implícito cuando el valor es una
+    construcción (``var b = new StringBuilder()`` → ``StringBuilder``).
+
+    **No** es inferencia de tipos real: no sigue el tipo de retorno de una
+    llamada (``var st = conn.createStatement()`` queda sin tipo, porque haría
+    falta la firma de ``createStatement``), ni resuelve genéricos, ni reasigna.
+    """
+    types: dict[str, str] = {}
+    for node in _ts_walk(root):
+        if _ts_kind(node) not in _TS_TYPED_DECLS:
+            continue
+        declared = _ts_field(node, "type")
+        type_name = _ts_type_name(declared, source) if declared is not None else ""
+        for holder in _ts_declarators(node):
+            name_node = _ts_field(holder, "name") or _ts_field(holder, "left")
+            if name_node is None:
+                continue
+            variable = _ts_text(name_node, source).strip()
+            if not variable or not variable.isidentifier():
+                continue
+            resolved = type_name
+            if not resolved or resolved in _TS_IMPLICIT_TYPES:
+                resolved = _ts_constructed_type(holder, source)
+            if resolved and resolved not in _TS_IMPLICIT_TYPES:
+                types[variable] = resolved
+    return types
+
+
+def _ts_declarators(node: object) -> list[object]:
+    """El nodo mismo más sus declaradores hijos (un decl puede declarar varios)."""
+    holders = [
+        child
+        for child in _ts_walk(node)
+        if "declarator" in _ts_kind(child) or _ts_kind(child) == "var_spec"
+    ]
+    return holders or [node]
+
+
+def _ts_type_name(node: object, source: bytes) -> str:
+    """Último segmento de un tipo: ``java.sql.Statement`` → ``Statement``."""
+    text = _ts_text(node, source).strip()
+    text = text.split("<", 1)[0].strip()  # genéricos: List<String> → List
+    text = text.rstrip("[]*&? ")
+    return text.rsplit(".", 1)[-1]
+
+
+def _ts_constructed_type(node: object, source: bytes) -> str:
+    """Tipo inferido del valor asignado, si es una construcción (``new Foo()``)."""
+    for child in _ts_walk(node):
+        kind = _ts_kind(child)
+        if "object_creation" in kind or "new_expression" in kind or kind == "composite_literal":
+            target = _ts_field(child, "type")
+            if target is not None:
+                return _ts_type_name(target, source)
+    return ""
+
+
+def _substitute_receiver(name: str, types: dict[str, str] | None) -> str:
+    """Reemplaza la variable inicial de un nombre punteado por su tipo.
+
+    C#, Go y JS/TS entregan la llamada como un path completo en un solo campo
+    (``cmd.ExecuteReader``), no como receptor y método separados, así que la
+    sustitución por tipo tiene que hacerse acá además de en
+    :func:`_ts_receiver_name`. Sin esto el catálogo solo sirve para Java.
+    """
+    if not types or "." not in name:
+        return name
+    head, _, rest = name.partition(".")
+    replacement = types.get(head)
+    return f"{replacement}.{rest}" if replacement else name
+
+
+def _ts_receiver_name(
+    node: object, source: bytes, types: dict[str, str] | None = None
+) -> str:
     """Nombre del receptor de una llamada, reducido a algo comparable con un tipo.
 
     El receptor puede ser una expresión entera —``Runtime.getRuntime()``,
-    ``new File(p)``, ``this``— y lo que interesa para comparar contra un catálogo
-    de sinks es el **tipo**, no la expresión. Se prefiere el primer identificador
-    que empieza en mayúscula (convención de tipos en Java, C# y Kotlin) y, si no
-    hay ninguno, el primero que aparezca.
+    ``new File(p)``, ``st``— y lo que interesa para comparar contra un catálogo de
+    sinks es el **tipo**, no la expresión.
 
-    Es una heurística: un receptor guardado en una variable en minúscula
-    (``rt.exec(...)`` con ``rt = Runtime.getRuntime()``) devuelve ``rt``, no
-    ``Runtime``. Resolver eso pide inferencia de tipos, que está fuera de alcance.
+    Orden de resolución:
+
+    1. Si el receptor es una variable declarada en el chunk, se usa **su tipo**
+       (``st`` → ``Statement``). Es lo que hace utilizable el catálogo: casi todos
+       los sinks de métodos de instancia están catalogados por tipo.
+    2. Si no, el primer identificador en mayúscula (convención de tipos en Java,
+       C# y Kotlin), que cubre las llamadas estáticas.
+    3. Si no, el primer identificador que aparezca.
+
+    Sigue siendo aproximado: una variable cuyo tipo viene del retorno de otra
+    llamada no se resuelve (haría falta la firma del callee).
     """
     text = _ts_text(node, source).strip()
     if text in ("this", "self", "super"):
         return text
+    if types and text in types:
+        return types[text]
     identifiers = [
         _ts_text(child, source)
         for child in _ts_walk(node)
