@@ -21,6 +21,14 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.3.0 (2026-07-30)
+
+### Features
+
+- **m4**: Learn sinks automatically for languages without coverage
+  ([`1333534`](https://github.com/Secure-Hex/HexFlaw/commit/13335344e688116c0a28d2ab938b6baa243609d6))
+
+
 ## v1.2.0 (2026-07-30)
 
 ### Features
