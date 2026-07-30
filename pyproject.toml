@@ -115,6 +115,16 @@ target-version = "py311"
 # del proyecto y no siguen su estilo.
 extend-exclude = [".agents", ".atl", ".claude", ".kilocode", ".qwen", "benchmarks/vendor"]
 
+[tool.ruff.lint]
+# El set de reglas se fija EXPLÍCITAMENTE. Sin esto se hereda el default de la
+# versión de ruff instalada, que cambia entre releases: ruff 0.16 activó una
+# decena de grupos nuevos y el mismo commit pasaba local y fallaba en CI. La
+# política de lint la decide el proyecto, no la versión que le tocó a CI.
+#
+#   E4/E7/E9, F  errores reales de pycodestyle/pyflakes
+#   I            orden de imports (autofixable)
+select = ["E4", "E7", "E9", "F", "I"]
+
 [tool.mypy]
 # Sin 'python_version': mypy usa el intérprete con el que corre. Pinearlo en 3.11
 # rompe con dependencias transitivas modernas (numpy 2.5 ya no soporta 3.11 y sus

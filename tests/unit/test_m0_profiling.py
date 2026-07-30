@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from pathlib import Path
+
+import pytest
 
 from hexflaw.infrastructure import profile_store
 from hexflaw.modules import m0_profiling

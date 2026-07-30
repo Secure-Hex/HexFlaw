@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from hexflaw.core.models import IngestionResult, TargetDefinition
-from typing import Any
 from pathlib import Path
+from typing import Any
 
+from hexflaw.core.models import IngestionResult, TargetDefinition
 from hexflaw.infrastructure.analysis_cache import AnalysisCache
 from hexflaw.modules import m1_ingestion, m2_target, m4_static
 from hexflaw.services.embedding import LocalCPUEmbedding

@@ -7,10 +7,10 @@ etiquetado de ``variant_of`` y convergencia del loop iterativo.
 
 from __future__ import annotations
 
-import pytest
-
 import hashlib
 from pathlib import Path
+
+import pytest
 
 from hexflaw.core.models import (
     CodeChunk,

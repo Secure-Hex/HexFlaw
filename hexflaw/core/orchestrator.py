@@ -10,8 +10,8 @@ Agnóstico a la interfaz: la CLI y la futura Web API lo invocan igual.
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,8 +28,7 @@ from hexflaw.core.models import (
     TargetDefinition,
 )
 from hexflaw.core.project import Project
-from hexflaw.infrastructure import storage
-from hexflaw.infrastructure import runs
+from hexflaw.infrastructure import runs, storage
 from hexflaw.infrastructure.analysis_cache import AnalysisCache
 from hexflaw.infrastructure.config import Config
 from hexflaw.infrastructure.logging import get_logger

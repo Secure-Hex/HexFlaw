@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from pathlib import Path
+
+import pytest
 
 from hexflaw.infrastructure import config as config_mod
 from hexflaw.infrastructure import secrets_store

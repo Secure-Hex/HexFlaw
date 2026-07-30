@@ -12,9 +12,9 @@ from hexflaw.cli.commands.agent import app as agent_app
 from hexflaw.cli.commands.analyze import analyze_command
 from hexflaw.cli.commands.claude_setup import claude_install_command
 from hexflaw.cli.commands.config import config_command
-from hexflaw.cli.commands.ingest import ingest_command
 from hexflaw.cli.commands.findings import app as findings_app
 from hexflaw.cli.commands.graph import graph_command
+from hexflaw.cli.commands.ingest import ingest_command
 from hexflaw.cli.commands.init import init_command
 from hexflaw.cli.commands.languages import app as languages_app
 from hexflaw.cli.commands.poc import poc_command

@@ -12,8 +12,8 @@ determinístico. Ambos modos devuelven :class:`TargetDefinition` con su ``mode``
 
 from __future__ import annotations
 
-from typing import Any
 import json
+from typing import Any
 
 from hexflaw.core.models import EntryPoint, IngestionResult, TargetDefinition
 from hexflaw.infrastructure.logging import get_logger

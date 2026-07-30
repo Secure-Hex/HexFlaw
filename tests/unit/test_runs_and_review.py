@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from hexflaw.core.models import CodeGraph, IngestionResult
 from pathlib import Path
 
-from hexflaw.core.models import Finding, FindingSet, FindingStatus
+from hexflaw.core.models import CodeGraph, Finding, FindingSet, FindingStatus, IngestionResult
 from hexflaw.infrastructure.runs import RunStore, new_run_id
 from hexflaw.modules import m1_ingestion, m3_graph, m5_taint
 from hexflaw.services.language_service import LanguageService

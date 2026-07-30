@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from hexflaw.core.models import CodeGraph
 from pathlib import Path
 
 from hexflaw.core.models import (
+    CodeGraph,
     Finding,
     FindingStatus,
     IngestionResult,

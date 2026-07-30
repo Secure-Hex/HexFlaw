@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from pathlib import Path
+
+import pytest
 
 from hexflaw.services import language_service
 from hexflaw.services.language_service import LanguageService, sync_builtins

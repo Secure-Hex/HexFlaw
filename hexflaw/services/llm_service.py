@@ -11,16 +11,15 @@ servicio centraliza:
 
 from __future__ import annotations
 
-from typing import Any
 import json
 import os
 import time
-from collections.abc import Iterator
 from collections import deque
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from hexflaw.infrastructure.logging import get_logger
 from hexflaw.services.secret_scan import redact_secrets
