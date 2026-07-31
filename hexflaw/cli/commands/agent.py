@@ -19,8 +19,12 @@ debe ser exactamente lo que el módulo (M2/M4/M5/M6) espera parsear.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +33,8 @@ import typer
 from hexflaw.cli import console
 from hexflaw.cli.helpers import resolve_active_config
 from hexflaw.infrastructure import config as config_mod
+from hexflaw.services import agent_registry
+from hexflaw.services.agent_registry import AgentCLI
 from hexflaw.services.llm_service import AgentQueueLLMService
 
 app = typer.Typer(
@@ -186,3 +192,166 @@ def answer(
         f"Respuesta entregada para [bold]{console.esc(request_id)}[/] "
         f"({len(payload['text']):,} ch). El pipeline continuará."
     )
+
+
+def _run_agent(agent: AgentCLI | None, custom_cmd: str | None, req: dict[str, Any], timeout: float) -> str:
+    """Ejecuta UN request en un proceso nuevo y devuelve el texto de la respuesta.
+
+    Proceso nuevo por request a propósito: es lo que hace que cada batch se analice
+    con el contexto limpio, igual que una llamada a la API. Un único agente
+    respondiendo la cola entera arrastra en su ventana todo lo que ya vio, y las
+    respuestas del batch 30 salen condicionadas por los 29 anteriores.
+
+    Args:
+        agent: CLI a invocar, o ``None`` si se usa ``custom_cmd``.
+        custom_cmd: Comando propio (recibe el system en ``HEXFLAW_SYSTEM``).
+        req: Request de la cola (con ``system`` y ``prompt``).
+        timeout: Segundos máximos para esta invocación.
+
+    Returns:
+        Texto crudo que imprimió el agente.
+
+    Raises:
+        RuntimeError: Si el agente falla, expira o no imprime nada.
+    """
+    system = str(req.get("system", ""))
+    prompt = str(req.get("prompt", ""))
+
+    if custom_cmd:
+        argv = ["bash", "-c", custom_cmd]
+        stdin = prompt
+        env = {**os.environ, "HEXFLAW_SYSTEM": system}
+    elif agent is not None:
+        argv = agent.argv(system)
+        stdin = agent.stdin_for(system, prompt)
+        env = dict(os.environ)
+    else:  # pragma: no cover - lo impide la validación del comando
+        raise RuntimeError("sin agente ni --cmd")
+
+    try:
+        proc = subprocess.run(
+            argv, input=stdin, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"timeout de {timeout:.0f}s") from exc
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"no se pudo ejecutar: {exc}") from exc
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()
+        raise RuntimeError(f"exit {proc.returncode}: {detail[-1] if detail else 'sin stderr'}")
+    if not proc.stdout.strip():
+        raise RuntimeError("el agente no imprimió nada")
+    return proc.stdout
+
+
+def _deliver(queue: Path, request_id: str, raw: str) -> None:
+    """Escribe la respuesta de un request en la cola (mismo formato que 'answer')."""
+    payload: dict[str, Any]
+    try:
+        parsed = json.loads(raw)
+        payload = parsed if isinstance(parsed, dict) and "text" in parsed else {"text": raw}
+    except json.JSONDecodeError:
+        payload = {"text": raw}
+    payload["id"] = request_id
+    AgentQueueLLMService._write_atomic(queue / f"res-{request_id}.json", payload)
+
+
+@app.command("drain")
+def drain(
+    agent_id: str = typer.Option(
+        None,
+        "--agent",
+        help="claude | codex | opencode | qwen | gemini. Por defecto, el primero instalado.",
+    ),
+    cmd: str = typer.Option(
+        None, "--cmd", help="Comando propio en vez de un CLI conocido (system en $HEXFLAW_SYSTEM)."
+    ),
+    workers: int = typer.Option(
+        4, "--workers", "-w", help="Requests en paralelo, cada uno en su propio proceso."
+    ),
+    once: bool = typer.Option(False, "--once", help="Procesa lo pendiente y sale."),
+    interval: float = typer.Option(2.0, "--interval", help="Segundos entre sondeos de la cola."),
+    timeout: float = typer.Option(600.0, "--timeout", help="Segundos máximos por request."),
+) -> None:
+    """Responde la cola del backend 'agent' repartiendo cada batch a un proceso nuevo.
+
+    Es el otro lado de ``hexflaw analyze --llm-backend agent``: mientras el análisis
+    espera bloqueado, este comando toma los requests y los reparte.
+
+    Cada request corre en su **propio proceso**, así que llega con el contexto
+    limpio — como una llamada a la API. Y ``--workers`` los corre en paralelo, que
+    es lo que hace tolerable el arranque en frío de estos CLIs: si cada invocación
+    tarda medio minuto en levantar, hacerlas de a una convierte un análisis en una
+    tarde.
+    """
+    if workers < 1:
+        console.error("--workers tiene que ser al menos 1.")
+        raise typer.Exit(code=1)
+
+    agent: AgentCLI | None = None
+    if cmd is None:
+        if agent_id:
+            agent = agent_registry.resolve(agent_id)
+            if agent is None:
+                console.error(
+                    f"Agente desconocido: '{agent_id}'. "
+                    f"Opciones: {', '.join(sorted(agent_registry.BY_ID))}"
+                )
+                raise typer.Exit(code=1)
+            if shutil.which(agent.binary) is None:
+                console.error(f"'{agent.binary}' no está en el PATH: {agent.name} no está instalado.")
+                raise typer.Exit(code=1)
+        else:
+            found = agent_registry.detect()
+            if not found.any_installed:
+                console.error(
+                    "No se encontró ningún CLI de agente instalado. "
+                    "Instalá uno o pasá --cmd '<comando>'."
+                )
+                raise typer.Exit(code=1)
+            agent = found.installed[0]
+
+    queue = _queue_dir()
+    label = cmd if cmd else (agent.name if agent else "?")
+    console.info(
+        f"Drenando [bold]{console.esc(queue)}[/] con [bold]{console.esc(label)}[/] "
+        f"· {workers} en paralelo · un proceso nuevo por request"
+    )
+
+    # Los ids ya tomados. Con un solo proceso de drenado alcanza un set en memoria;
+    # dos drenados sobre la misma cola duplicarían trabajo (no corrompen nada, pero
+    # gastan el doble), así que no lo hagas.
+    claimed: set[str] = set()
+    done = 0
+    failed = 0
+
+    def handle(req: dict[str, Any]) -> tuple[str, str | None]:
+        rid = str(req.get("id", ""))
+        try:
+            raw = _run_agent(agent, cmd, req, timeout)
+        except RuntimeError as exc:
+            return rid, str(exc)
+        _deliver(queue, rid, raw)
+        return rid, None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while True:
+            batch = [r for r in _pending_requests(queue) if str(r.get("id")) not in claimed]
+            if batch:
+                for req in batch:
+                    claimed.add(str(req.get("id")))
+                for rid, error in pool.map(handle, batch):
+                    if error is None:
+                        done += 1
+                        console.success(f"{rid} respondido")
+                    else:
+                        failed += 1
+                        # El request queda pendiente: la próxima vuelta lo reintenta.
+                        claimed.discard(rid)
+                        console.warn(f"{rid} falló ({error}); queda pendiente")
+            if once:
+                break
+            time.sleep(interval)
+
+    console.info(f"[dim]{done} respondidos · {failed} fallidos[/]")

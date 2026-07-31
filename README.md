@@ -197,6 +197,7 @@ findings/ + reports/ + poc/
 | `analyze` | Pipeline M2→M5 | `--profile`, `--target`, `--path`, `--mode`, `--budget` |
 | `report` | Reportes de confirmados (M6a→M6b) | `--format markdown\|pdf\|json\|sarif` |
 | `poc` | PoCs de confirmados (M6a→M6c) | — |
+| `agents-install` | Integra HexFlaw con los agentes CLI instalados | `--list`, `--only` |
 | `models` | Ver y cambiar qué modelo corre cada tarea | `list`, `set --cheap/--mid/--deep` |
 | `run <fuente>` | Pipeline completo de una vez (acepta directorio/zip/git/url) | `--target`, `--format markdown\|pdf\|json\|sarif` |
 | `status` | Estado del proyecto y artefactos | — |
@@ -790,155 +791,48 @@ hexflaw agent show <id>                             # system + prompt verbatim
 hexflaw agent answer <id> --text '{"findings":[…]}' # el JSON que el módulo espera
 ```
 
-**Uso scripted** — el repo incluye **`scripts/agent-bridge.sh`**, un puente que automatiza
-el loop (sondea la cola, pasa cada request a tu agente y deja la respuesta):
+**Uso automático** (`hexflaw agent drain`) — drena la cola repartiendo cada request a un
+**proceso nuevo** del agente elegido:
 
 ```bash
-scripts/agent-bridge.sh --agent claude              # Claude Code (claude -p)
-scripts/agent-bridge.sh --agent codex               # Codex CLI
-scripts/agent-bridge.sh --agent custom --cmd 'mi-cli --flag'   # comando propio
-scripts/agent-bridge.sh --agent claude --once       # procesa lo pendiente y sale
+hexflaw agent drain                                  # usa el primer agente detectado
+hexflaw agent drain --agent claude --workers 4       # 4 requests en paralelo
+hexflaw agent drain --agent codex --once             # procesa lo pendiente y sale
+hexflaw agent drain --cmd 'mi-cli --flag'            # comando propio
 ```
 
-El agente recibe el `system` (como system prompt) y el `prompt` (por STDIN), y debe imprimir
-por STDOUT el JSON que el módulo espera. En modo `custom`, tu comando recibe el `system` en
-`$HEXFLAW_SYSTEM` y el `prompt` por STDIN. Requiere `jq`.
+⚠️ **Un proceso nuevo por batch, y esto es lo importante.** Si un solo agente responde la
+cola entera desde una misma ventana, su contexto acumula todo lo que ya vio: para el batch
+30 está clasificando condicionado por los 29 anteriores, y dos funciones idénticas en
+archivos distintos dejan de recibir el mismo trato. La API no funciona así — cada llamada
+llega limpia. `drain` reproduce eso: cada request corre aislado, y `--workers` los solapa
+para amortizar el arranque en frío de estos CLIs (medido con 6 requests: 6,3 s en serie
+contra 1,2 s con 6 en paralelo).
 
-**Integración con Claude Code** (`hexflaw claude-install`) — el modo más cómodo si trabajás
-dentro de Claude Code: instala un slash command y el propio Claude Code conduce la cola con su
-razonamiento, así el costo corre por tu suscripción y no por la API.
+El agente recibe el `system` (como system prompt si su CLI lo soporta, si no antepuesto al
+prompt) y el `prompt` **por STDIN, nunca por argv** — los prompts de M5 llevan el code graph
+y reventaban con *argument list too long*. En modo `--cmd`, tu comando recibe el `system` en
+`$HEXFLAW_SYSTEM`. Un agente que falla o no imprime nada **deja el request pendiente** para
+el próximo intento: escribir una respuesta vacía sería peor, porque el pipeline la leería
+como un análisis sin hallazgos.
+
+**Integración con tus agentes** (`hexflaw agents-install`) — detecta qué CLIs de agente
+tenés instalados e instala en **todos** un slash command que corre el análisis:
 
 ```bash
-# En la terminal, dentro del repo a auditar:
-hexflaw claude-install        # crea .claude/commands/hexflaw.md  (--global para ~/.claude)
-hexflaw ingest ./codigo       # dejá el repo ingestado
-
-# En Claude Code, en ese mismo repo:
-/hexflaw file upload handling   # corre analyze en modo agent y Claude Code responde la cola
+hexflaw agents-install --list        # solo mostrar qué se detectó
+hexflaw agents-install               # instalar en todos los detectados
+hexflaw agents-install --only codex  # solo en uno
 ```
 
-**A tener en cuenta:** 1 llamada LLM = 1 request = 1 round-trip; M5 dispara ~1 por hallazgo,
-así que conviene acotar con `--target` + `--mode economy`. Los **embeddings deben ser
-`local-cpu`** para que sea de verdad cero tokens. Si el `text` no respeta el formato
-esperado, el módulo lo trata como parseo fallido.
+Reconoce Claude Code, Codex CLI, opencode, Qwen Code y Gemini CLI. El slash command
+instalado **no razona el análisis en su propia ventana**: lanza `analyze` y `agent drain`,
+así cada batch lo contesta un proceso limpio. Para los CLIs cuyo formato de comando no pudo
+verificarse contra una instalación real, el comando lo dice en vez de dar por hecho que
+quedó andando; el flujo manual de dos terminales funciona igual.
 
-### 4.8 M5 — Taint Tracing: de "sink" a "vulnerabilidad"
+`hexflaw claude-install` sigue existiendo como alias deprecado.
 
-Acá está el corazón de por qué HexFlaw no es un matcher de patrones. Por cada hallazgo
-preliminar de M4:
-
-1. **Localiza el sink** en el code graph.
-2. **Busca un camino** desde un entry point hasta ese sink, con **BFS multi-source** sobre
-   el grafo: O(V+E), encuentra el camino más corto (el más directo). Se usa BFS y no
-   enumeración de todos los caminos porque enumerar *explota exponencialmente* en grafos
-   reales (medido en la versión ingenua: >15 s por sink, hasta colgarse; con BFS: ~0.9 ms
-   por sink). La detección de ciclos es implícita en el `visited` del BFS.
-
-   Se **prefiere el camino de flujo de datos**, que prueba que el dato del atacante llega
-   al sink, y no solo que el sink es alcanzable. Si no existe, se cae al camino de llamadas
-   y se le dice explícitamente al LLM que eso *no* es evidencia de flujo.
-3. **Confirma con el LLM**: le da el camino (o, si no hay ninguno, el código de la propia
-   función) y le pide clasificar. Cada salto va anotado con lo que el grafo sabe —qué
-   variables entran, si venían sanitizadas, qué condición lo guarda— **antes** de la
-   interpretación del LLM, para que el reporte distinga evidencia de razonamiento.
-
-> **Decisión de diseño — no auto-descartar por grafo incompleto.** El call graph es
-> heurístico (no resuelve dispatch dinámico ni llamadas cross-file complejas). Una versión
-> previa marcaba `false_positive` cuando no encontraba camino — pero "sin camino en
-> *nuestro* grafo" no es lo mismo que "no explotable", y descartaba vulns reales. Ahora,
-> si no hay camino, **igual se consulta al LLM** con el código de la función (forward
-> taint local). El veredicto lo decide el análisis del código, no una limitación del grafo.
-
-El veredicto del LLM se mapea a `confirmed` / `conditional` / `false_positive`. Si el LLM
-responde algo **inconcluso** (o la llamada falla por error/presupuesto), el hallazgo queda
-en **`needs_review`** con un `review_reason` explícito — distinto de `preliminary`, que
-significa "todavía no evaluado". Cualquier `needs_review` se re-evalúa puntualmente con
-`findings recheck <ID>` (re-corre M5 solo sobre ese hallazgo).
-
-El estado `conditional` es importante: captura el caso real de "hay una mitigación pero es
-débil/evadible" (ej. una denylist de comandos que no cubre todos los casos). Ni confirmado
-ni descartado: condicionalmente explotable.
-
-#### La traza auditable de cada hallazgo
-
-Un hallazgo que solo dice *qué* y *dónde* obliga a revisarlo entero. Cada uno lleva la
-traza que hace falta antes de aceptarlo, visible en `hexflaw findings show <ID>`:
-
-```
-╭──────────────────── Traza ─────────────────────╮
-│     Evidencia  grafo + LLM                     │
-│        Camino  el DATO llega al sink           │
-│        Source  api.py::handle_request          │
-│          Sink  api.py::run · command_execution │
-│ Sin sanitizar  user                            │
-│       Guardas  if mode == 'admin'              │
-╰────────────────────────────────────────────────╯
-```
-
-El campo que más importa es **Evidencia**, porque separa lo que derivó el grafo —camino,
-variables, sanitizadores, guardas; todo verificable releyendo esas líneas— de lo que
-afirmó el modelo:
-
-| Evidencia | Qué significa |
-|---|---|
-| `determinístico (grafo)` | Sale del AST. Se comprueba leyendo el código. |
-| `grafo + LLM` | El grafo encontró el camino, el modelo concluyó sobre él. |
-| `solo LLM — verificar a mano` | No hay camino en el grafo; la conclusión es del modelo. |
-
-Y **Camino** aclara qué probó ese camino: `el DATO llega al sink` (flujo de datos) no es
-lo mismo que `el sink es alcanzable` (solo llamadas). Un reporte que mezcla las dos cosas
-obliga a desconfiar de todo por igual.
-
-### 4.9 M6 — Documentación: root cause, reportes y PoC
-
-- **M6a Root Cause**: por cada confirmado, el LLM genera causa raíz (no el síntoma, el
-  *por qué* existe), archivos/líneas afectadas, blast radius, **CVSS v3.1** (vector +
-  score) y remediación con código corregido. Si el LLM falla, hay un fallback
-  determinístico con la info ya disponible.
-- **M6b Reportes**: ejecutivo (lenguaje de negocio, sin código) + técnico (causa raíz,
-  snippet, taint path, CVSS, remediación) + consolidado. Formatos: **Markdown**,
-  **PDF** (render offline, sin recursos externos), **JSON** (un export consolidado para
-  Jira/Defect Dojo/CI) y **SARIF 2.1.0** (GitHub Code Scanning / SonarQube: una rule por
-  tipo de vuln, `security-severity` = score CVSS). Todo contenido del código analizado se
-  **escapa** antes de insertarse, y los snippets pasan por **secret scanning** (redacta
-  API keys, tokens, claves privadas) antes de quedar en cualquier reporte/export.
-- **M6c PoC**: por cada confirmado, un PoC ejecutable **adaptado al tipo de objetivo** —
-  generado por el LLM (binario CLI → `subprocess` al binario; servicio de red → socket/
-  HTTP; web → request). Barreras inviolables: **payloads de demostración no destructivos**
-  (`id`, `whoami`, `sleep`), **placeholders** en vez de IPs/credenciales reales, y un
-  scanner que rechaza output destructivo (`rm -rf`, fork bombs, reverse shells, IPs
-  hardcodeadas) cayendo al template seguro. **HexFlaw nunca ejecuta el PoC** — se genera
-  como archivo estático para que vos lo revises.
-
-M6b y M6c corren **en paralelo** una vez que M6a termina.
-
-### 4.10 Seguridad por diseño (transversal)
-
-HexFlaw analiza código potencialmente malicioso con tus permisos. El threat model trata
-ese código como hostil:
-
-- **Prompt injection desde el código**: todo lo que va al LLM se delimita en
-  `<CODE></CODE>` con instrucción de tratarlo como datos. Comentarios tipo
-  "IGNORA INSTRUCCIONES PREVIAS" dentro del código no afectan el análisis.
-- **Nunca ejecutar el código analizado** (M1/M3/M4) ni el PoC generado (M6c). Al clonar
-  repos git, los **hooks se deshabilitan** para que el repo no ejecute código.
-- **Permisos estrictos** (`600`/`700`) en todos los artefactos; las **API keys se guardan
-  en el keyring del SO** (con el extra `[secrets]`), nunca en disco plano — el fallback a
-  `config.json` (`600`) solo ocurre sin keyring y con advertencia explícita.
-- **Builtins de lenguaje inmutables**: `setup` los copia a `~/.hexflaw/languages/builtin/`
-  como solo-lectura (`444`), inspeccionables sin poder corromperlos.
-- **Validación de schema** en todo JSON leído de disco (definiciones de lenguaje, code
-  graph, config), con `additionalProperties: false` y límites de longitud.
-- **Secret scanning antes de enviar código a la API** del LLM **y** antes de escribir
-  cualquier snippet a un reporte/export — la red de seguridad cubre todo el pipeline en un
-  único punto de salida.
-- **Sanitización de logs**: nada de caracteres de control / inyección de líneas desde el
-  código analizado.
-- **Output del LLM tratado con escepticismo**: todo reporte incluye el disclaimer de que
-  fue generado por IA y requiere validación manual; el PoC nunca se presenta como garantía
-  de explotabilidad.
-
----
 
 ## 5. Arquitectura (resumen)
 

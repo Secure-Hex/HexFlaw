@@ -9,8 +9,11 @@ from __future__ import annotations
 import typer
 
 from hexflaw.cli.commands.agent import app as agent_app
+from hexflaw.cli.commands.agents_setup import (
+    agents_install_command,
+    claude_install_command,
+)
 from hexflaw.cli.commands.analyze import analyze_command
-from hexflaw.cli.commands.claude_setup import claude_install_command
 from hexflaw.cli.commands.config import config_command
 from hexflaw.cli.commands.findings import app as findings_app
 from hexflaw.cli.commands.graph import graph_command
@@ -43,7 +46,8 @@ app.command("run")(run_command)
 app.command("graph")(graph_command)
 app.command("status")(status_command)
 app.command("config")(config_command)
-app.command("claude-install")(claude_install_command)
+app.command("agents-install")(agents_install_command)
+app.command("claude-install", hidden=True)(claude_install_command)
 app.command("tui")(tui_command)
 app.add_typer(languages_app, name="languages")
 app.add_typer(findings_app, name="findings")
