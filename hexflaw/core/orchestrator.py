@@ -264,6 +264,7 @@ class Orchestrator:
         # (sin prefiltro de sinks, sin límite de scope, sin dedup near) y con Opus
         # en todas las tareas. Máxima cobertura y capacidad, sin importar el costo.
         exhaustive = self.config.get("exhaustive", False)
+        concurrency = int(self.config.get("llm_concurrency", 1) or 1)
 
         # Run ID al inicio: su slug prefija los IDs de findings para que sean únicos
         # entre runs (buscables cross-run), y el run en vivo muestra el mismo ID que
@@ -339,6 +340,7 @@ class Orchestrator:
                 self.languages,
                 mode=mode_str,
                 model=choose_model(Task.STATIC_SIMPLE, mode, exhaustive=exhaustive),
+                concurrency=concurrency,
                 embedding=embedding,
                 cache=AnalysisCache(self.project.hexflaw_dir),
                 scope_query=target.target_confirmed,
@@ -371,6 +373,7 @@ class Orchestrator:
             ingestion,
             self.llm,
             model=choose_model(Task.TAINT, mode, exhaustive=exhaustive),
+            concurrency=concurrency,
             on_status=self._set_detail,
         )
 

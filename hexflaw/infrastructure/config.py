@@ -75,6 +75,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Fracción del token_budget que M4 reserva para que M5 (confirmación) siempre
     # tenga presupuesto. Sin esto, M4 puede agotar el techo y dejar 0 confirmados.
     "m5_budget_reserve": 0.30,
+    # Llamadas LLM simultáneas en M4 y M5. 1 = comportamiento secuencial de antes.
+    #
+    # No es "cuánto aguanta la API": el rate limiter interno sigue aplicando y ahora
+    # es thread-safe, así que reserva su lugar en la ventana bajo lock. Sirve para
+    # aprovechar el hueco entre el techo de tokens/min y lo que una sola llamada
+    # secuencial alcanza a usar — medido en un proyecto real, el pacing permitía
+    # ~10 batches/min y la ejecución secuencial entregaba 4.
+    #
+    # Con el backend 'agent' rinde el doble, porque ahí no hay pacing y además hace
+    # útiles los --workers del drenado: sin varias llamadas en vuelo nunca hay más
+    # de un request en la cola y los workers extra miran el techo.
+    "llm_concurrency": 4,
     # Tope de chunks a analizar tras acotar por el target (M4 scope). Evita barrer
     # codebases enormes cuando se da un --target específico.
     "scope_max_chunks": 200,
@@ -150,6 +162,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 #: explícito o clave en el config.json le gana en su misma capa de precedencia.
 PROFILES: dict[str, dict[str, Any]] = {
     "fast": {
+        "llm_concurrency": 4,
         "analysis_mode": "economy",
         "token_budget": 300_000,
         "scope_max_chunks": 100,
@@ -163,6 +176,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "exhaustive": False,
     },
     "audit": {
+        "llm_concurrency": 4,
         "analysis_mode": "balanced",
         "token_budget": 1_500_000,
         "scope_max_chunks": 200,
@@ -174,6 +188,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "exhaustive": False,
     },
     "paranoid": {
+        "llm_concurrency": 8,
         "analysis_mode": "thorough",
         "token_budget": 5_000_000,
         # Sin prefiltro de sinks, sin tope de scope y sin dedup near: en este perfil

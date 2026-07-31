@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from hexflaw.core.model_policy import ModelTier
@@ -157,6 +159,7 @@ def analyze(
     *,
     mode: str = "balanced",
     model: ModelTier | None = None,
+    concurrency: int = 1,
     embedding: EmbeddingService | None = None,
     cache: AnalysisCache | None = None,
     scope_query: str | None = None,
@@ -298,12 +301,26 @@ def analyze(
     total_batches = (len(to_analyze) + batch_size - 1) // batch_size
     if cache is not None and len(to_analyze) < len(relevant):
         logger.info("M4 caché: %d chunks reutilizados", len(relevant) - len(to_analyze))
-    for batch_idx, batch in enumerate(_batches(to_analyze, batch_size), start=1):
-        notify(f"M4 · análisis LLM · batch {batch_idx}/{total_batches}")
-        prompt = _FINDINGS_INSTRUCTION.format(vulns=prompt_vulns)
-        code_blob = "\n\n".join(
-            f"{_chunk_header(c, graph)}\n{c.code}" for c in batch
-        )
+    prompt = _FINDINGS_INSTRUCTION.format(vulns=prompt_vulns)
+    batches = list(enumerate(_batches(to_analyze, batch_size), start=1))
+    done = 0
+
+    # Al agotarse el budget hay que frenar de verdad. `executor.map` encola TODAS
+    # las tareas de entrada, así que cortar el bucle de consumo no alcanza: las que
+    # ya están en la cola igual llamarían al LLM. El flag se chequea dentro del
+    # worker, antes de gastar.
+    stop = threading.Event()
+    progress = threading.Lock()
+
+    def run_batch(
+        item: tuple[int, list[CodeChunk]],
+    ) -> tuple[list[CodeChunk], list[dict[str, Any]] | None]:
+        """Analiza un batch. Devuelve ``None`` si hay que frenar el análisis."""
+        nonlocal done
+        batch_idx, batch = item
+        if stop.is_set():
+            return batch, None
+        code_blob = "\n\n".join(f"{_chunk_header(c, graph)}\n{c.code}" for c in batch)
         try:
             response = llm.analyze_code(
                 prompt,
@@ -313,16 +330,28 @@ def analyze(
             )
         except BudgetExceededError as exc:
             logger.warning("M4 detenido por budget: %s", exc)
-            break  # no seguir gastando tokens
+            stop.set()
+            return batch, None
         except LLMServiceError as exc:
             logger.error("Fallo LLM en batch (se omite): %s", exc)
-            continue
+            return batch, []
+        with progress:
+            done += 1
+            notify(f"M4 · análisis LLM · {done}/{total_batches} batches")
+        return batch, _parse_findings(response.text)
 
-        raw_findings = _parse_findings(response.text)
-        _cache_store(cache, batch, raw_findings, cache_model, cache_profile)
-        for raw in raw_findings:
-            findings.append(_to_finding(raw, counter, batch))
-            counter += 1
+    # Se lanzan en paralelo pero los RESULTADOS se consumen en orden de entrada:
+    # los IDs de finding (F001, F002…) y las entradas de caché deben salir iguales
+    # corra con 1 worker o con 8, o el mismo análisis produciría artefactos
+    # distintos según la máquina. `executor.map` preserva ese orden.
+    with ThreadPoolExecutor(max_workers=max(concurrency, 1)) as pool:
+        for batch, raw_findings in pool.map(run_batch, batches):
+            if raw_findings is None:
+                continue  # frenado por budget: no hay resultado que guardar
+            _cache_store(cache, batch, raw_findings, cache_model, cache_profile)
+            for raw in raw_findings:
+                findings.append(_to_finding(raw, counter, batch))
+                counter += 1
 
     if cache is not None:
         cache.flush()

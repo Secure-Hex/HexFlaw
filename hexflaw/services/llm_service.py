@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -26,6 +27,12 @@ from hexflaw.infrastructure.logging import get_logger
 from hexflaw.services.secret_scan import redact_secrets
 
 logger = get_logger(__name__)
+
+#: Ancho de la ventana deslizante del rate limiter, en segundos. Constante de
+#: módulo y no un literal suelto para que los tests puedan achicarla: verificar la
+#: exclusión mutua del pacing exige que el límite sea vinculante, y con 60 s fijos
+#: cada test de esa propiedad costaría un minuto de reloj.
+_RATE_WINDOW_SECONDS = 60.0
 
 #: Catálogo por defecto de Anthropic. Son DEFAULTS, no constantes de negocio: la
 #: config los pisa (``anthropic_model_cheap|mid|deep``) para que salir un modelo
@@ -109,6 +116,12 @@ class LLMService:
     model_usage: dict[str, Any] = field(default_factory=dict, init=False)
     _client: object | None = field(default=None, init=False, repr=False)
     _windows: dict[str, deque[tuple[float, int]]] = field(default_factory=dict, init=False, repr=False)
+    #: Protege TODO el estado mutable compartido (budget, ventana de pacing,
+    #: contadores de auditoría). M4 y M5 lanzan varias llamadas en paralelo, y sin
+    #: esto dos hilos podían pasar juntos el chequeo de budget o decidir a la vez
+    #: que "entra una más" en la ventana de rate limit — justamente los dos
+    #: mecanismos que están para que el análisis no se descontrole.
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.api_key = self.api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -126,26 +139,33 @@ class LLMService:
         """
         if not self.rate_limit_tpm:
             return
-        window: deque[tuple[float, int]] = self._windows.setdefault(model, deque())
         while True:
-            now = time.monotonic()
-            while window and now - window[0][0] >= 60.0:
-                window.popleft()
-            used = sum(tok for _, tok in window)
-            if used + est_tokens <= self.rate_limit_tpm or not window:
-                break
-            sleep_for = 60.0 - (now - window[0][0]) + 0.05
-            self.waiting_reason = f"rate-limit {sleep_for:.0f}s ({model})"
-            logger.info(
-                "Rate-limit pacing: esperando %.1fs (model=%s, usados=%d/%d tpm)",
-                sleep_for,
-                model,
-                used,
-                self.rate_limit_tpm,
-            )
+            with self._lock:
+                window = self._windows.setdefault(model, deque())
+                now = time.monotonic()
+                while window and now - window[0][0] >= _RATE_WINDOW_SECONDS:
+                    window.popleft()
+                used = sum(tok for _, tok in window)
+                if used + est_tokens <= self.rate_limit_tpm or not window:
+                    # Se RESERVA el lugar acá dentro, antes de soltar el lock: si se
+                    # anotara recién después de la llamada, N hilos concurrentes
+                    # verían todos la ventana vacía, saldrían juntos y reventarían el
+                    # límite — que es exactamente el 429 que esto evita.
+                    window.append((now, est_tokens))
+                    self.waiting_reason = ""
+                    return
+                sleep_for = _RATE_WINDOW_SECONDS - (now - window[0][0]) + 0.05
+                self.waiting_reason = f"rate-limit {sleep_for:.0f}s ({model})"
+                logger.info(
+                    "Rate-limit pacing: esperando %.1fs (model=%s, usados=%d/%d tpm)",
+                    sleep_for,
+                    model,
+                    used,
+                    self.rate_limit_tpm,
+                )
+            # Dormir FUERA del lock: si no, un hilo esperando su turno bloquearía a
+            # los demás y la concurrencia se degradaría a ejecución secuencial.
             time.sleep(max(sleep_for, 0.1))
-        self.waiting_reason = ""
-        window.append((time.monotonic(), est_tokens))
 
     @property
     def total_tokens(self) -> int:
@@ -253,15 +273,16 @@ class LLMService:
             LLMServiceError: Ante fallos de configuración o de la API.
         """
         chosen = self.resolve_model(model or self.default_tier)
-        effective = self.effective_budget
-        if effective is not None and self.total_tokens >= effective:
+        with self._lock:
+            effective = self.effective_budget
+            spent = self.total_tokens
+            reserved = self.reserved_tokens
+        if effective is not None and spent >= effective:
             reserve_note = (
-                f" ({self.reserved_tokens} reservados para una fase posterior)"
-                if self.reserved_tokens
-                else ""
+                f" ({reserved} reservados para una fase posterior)" if reserved else ""
             )
             raise BudgetExceededError(
-                f"Budget de tokens alcanzado ({self.total_tokens}/{effective}"
+                f"Budget de tokens alcanzado ({spent}/{effective}"
                 f"{reserve_note}). Aumenta el budget con --budget o config token_budget."
             )
         # Secret scanning OBLIGATORIO antes de salir a la API externa (CLAUDE.md
@@ -286,15 +307,16 @@ class LLMService:
 
         self.last_label = trace_label
         text, in_tok, out_tok = self._complete(system, user_content, chosen, max_tokens)
-        self.total_input_tokens += in_tok
-        self.total_output_tokens += out_tok
-        self.last_model = chosen
-        usage_row = self.model_usage.setdefault(
-            chosen, {"calls": 0, "input": 0, "output": 0}
-        )
-        usage_row["calls"] += 1
-        usage_row["input"] += in_tok
-        usage_row["output"] += out_tok
+        with self._lock:
+            self.total_input_tokens += in_tok
+            self.total_output_tokens += out_tok
+            self.last_model = chosen
+            usage_row = self.model_usage.setdefault(
+                chosen, {"calls": 0, "input": 0, "output": 0}
+            )
+            usage_row["calls"] += 1
+            usage_row["input"] += in_tok
+            usage_row["output"] += out_tok
         logger.info(
             "LLM audit model=%s input_tokens=%d output_tokens=%d",
             chosen,

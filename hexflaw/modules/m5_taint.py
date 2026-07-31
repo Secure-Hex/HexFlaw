@@ -22,7 +22,9 @@ seguridad son peores que gastar los tokens.
 from __future__ import annotations
 
 import json
+import threading
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from hexflaw.core.model_policy import ModelTier
@@ -70,6 +72,7 @@ def confirm(
     llm: LLMService,
     *,
     model: ModelTier | None = None,
+    concurrency: int = 1,
     on_status: "Callable[[str], None] | None" = None,
 ) -> FindingSet:
     """Confirma o descarta hallazgos preliminares vía taint tracing.
@@ -94,8 +97,18 @@ def confirm(
     total = len(preliminary.findings)
 
     edge_index = _edge_lookup(graph)
-    for idx, finding in enumerate(preliminary.findings, start=1):
-        notify(f"M5 · confirmando finding {idx}/{total}")
+    # Igual que en M4: al agotarse el budget hay que frenar de verdad. El flag se
+    # chequea DENTRO del worker, porque las tareas ya encoladas llamarían al LLM
+    # aunque dejáramos de consumir resultados.
+    stop = threading.Event()
+    progress = threading.Lock()
+    done = 0
+
+    def confirm_one(finding: Finding) -> Finding | None:
+        """Confirma un hallazgo. ``None`` = no se evaluó (budget agotado)."""
+        nonlocal done
+        if stop.is_set():
+            return None
         sink_node = _locate_node(finding, graph)
         path_ids: list[str] = []
         is_data_flow = False
@@ -124,31 +137,41 @@ def confirm(
                 is_data_flow=is_data_flow,
             )
         except BudgetExceededError as exc:
-            # Budget agotado: a partir de acá toda llamada fallaría igual. En vez de
-            # emitir un error por cada finding restante, cortamos limpio y marcamos
-            # el actual y los pendientes como needs_review con una razón accionable.
-            remaining = preliminary.findings[idx - 1:]
-            logger.warning(
-                "M5 detenido por budget tras %d/%d findings; %d quedan needs_review: %s",
-                idx - 1, total, len(remaining), exc,
-            )
-            notify(f"M5 · budget agotado en {idx}/{total}; resto queda needs_review")
-            reason = (
-                "M5 no evaluó: budget de tokens agotado. Subí el budget (--budget / "
-                "config token_budget) y re-corré 'hexflaw analyze' (M4 sale de caché) "
-                "o 'hexflaw findings recheck' por hallazgo."
-            )
-            confirmed.extend(
-                f.model_copy(
-                    update={
-                        "status": FindingStatus.NEEDS_REVIEW,
-                        "review_reason": reason,
-                    }
+            logger.warning("M5 detenido por budget: %s", exc)
+            stop.set()
+            return None
+        with progress:
+            done += 1
+            notify(f"M5 · confirmando finding {done}/{total}")
+        return updated
+
+    # El orden de salida sigue al de entrada (executor.map), así que los hallazgos
+    # se reportan siempre en el mismo orden corra con 1 worker o con 8.
+    reason = (
+        "M5 no evaluó: budget de tokens agotado. Subí el budget (--budget / "
+        "config token_budget) y re-corré 'hexflaw analyze' (M4 sale de caché) "
+        "o 'hexflaw findings recheck' por hallazgo."
+    )
+    with ThreadPoolExecutor(max_workers=max(concurrency, 1)) as pool:
+        for original, updated in zip(
+            preliminary.findings, pool.map(confirm_one, preliminary.findings)
+        ):
+            if updated is None:
+                # No se evaluó: queda needs_review con una razón accionable, nunca
+                # descartado — un hallazgo sin mirar no es un hallazgo descartado.
+                confirmed.append(
+                    original.model_copy(
+                        update={
+                            "status": FindingStatus.NEEDS_REVIEW,
+                            "review_reason": reason,
+                        }
+                    )
                 )
-                for f in remaining
-            )
-            break
-        confirmed.append(updated)
+            else:
+                confirmed.append(updated)
+    if stop.is_set():
+        skipped = sum(f.status == FindingStatus.NEEDS_REVIEW for f in confirmed)
+        notify(f"M5 · budget agotado; {skipped} quedan needs_review")
 
     logger.info(
         "M5: %d confirmados, %d condicionales, %d false positives",
