@@ -21,6 +21,27 @@ sobrescribe.
 
 <!-- version list -->
 
+## v1.7.0 (2026-07-31)
+
+### Bug Fixes
+
+- **agent**: Stop throttling the backend that never calls an API
+  ([`e057c0f`](https://github.com/Secure-Hex/HexFlaw/commit/e057c0fb634c639a4031569ae6e4b596f82f1041))
+
+### Features
+
+- **agents**: Detect every installed agent CLI and give each batch its own process
+  ([`4c43de5`](https://github.com/Secure-Hex/HexFlaw/commit/4c43de59cb7064a69d45fae3c94acfab9bb33b76))
+
+- **models**: Make model selection configurable by tier
+  ([`bce85ce`](https://github.com/Secure-Hex/HexFlaw/commit/bce85ce019dbe27a159e7c144266f23d87b66e7c))
+
+### Performance Improvements
+
+- **m4,m5**: Run LLM calls concurrently without breaking budget or pacing
+  ([`dd18a42`](https://github.com/Secure-Hex/HexFlaw/commit/dd18a428938195fbcf2e3de8334cbe5b4a598698))
+
+
 ## v1.6.0 (2026-07-30)
 
 ### Features
