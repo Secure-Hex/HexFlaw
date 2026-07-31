@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.core.models import EntryPoint, IngestionResult, TargetDefinition
 from hexflaw.infrastructure.logging import get_logger
 from hexflaw.services.language_service import LanguageService
@@ -81,7 +82,7 @@ def define_target_discovery(
     llm: LLMService,
     languages_service: LanguageService,
     *,
-    model: str | None = None,
+    model: ModelTier | None = None,
 ) -> TargetDefinition:
     """Construye la definición de target en modo discovery (propuesta del LLM).
 

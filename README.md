@@ -197,6 +197,7 @@ findings/ + reports/ + poc/
 | `analyze` | Pipeline M2→M5 | `--profile`, `--target`, `--path`, `--mode`, `--budget` |
 | `report` | Reportes de confirmados (M6a→M6b) | `--format markdown\|pdf\|json\|sarif` |
 | `poc` | PoCs de confirmados (M6a→M6c) | — |
+| `models` | Ver y cambiar qué modelo corre cada tarea | `list`, `set --cheap/--mid/--deep` |
 | `run <fuente>` | Pipeline completo de una vez (acepta directorio/zip/git/url) | `--target`, `--format markdown\|pdf\|json\|sarif` |
 | `status` | Estado del proyecto y artefactos | — |
 | `graph` | Inspecciona o exporta el code graph (M3) | `--format tree\|paths\|dot\|mermaid\|json`, `--node`, `--depth`, `--edges`, `--only-flows` |
@@ -695,6 +696,40 @@ usa una política por *tier*:
 
 El modo (`thorough`/`balanced`/`economy`) ajusta esta tabla: `economy` desactiva el tier
 avanzado; `thorough` lo habilita donde aporta.
+
+**Qué modelo concreto es cada tier — configurable.** El pipeline elige *cuánta capacidad*
+necesita una tarea, nunca un modelo. La traducción de tier a modelo la hace el backend
+activo, y sale de la config: cuando aparece un modelo nuevo se cambia ahí, sin tocar
+código ni esperar un release.
+
+```bash
+hexflaw models list                          # qué modelo corre cada tarea, hoy
+hexflaw models set --deep claude-opus-5      # estrenar uno nuevo
+hexflaw models set --backend openai --mid gpt-5
+```
+
+```
+$ hexflaw models list
+backend api (Anthropic) · modo balanced
+
+  Tier    Modelo                      Tareas                    Origen
+  cheap   claude-haiku-4-5-20251001   static_simple             default
+  mid     claude-sonnet-5             rootcause, poc            default
+  deep    claude-opus-5               target_discovery, taint   config
+```
+
+Las claves son `anthropic_model_cheap|mid|deep` y `openai_model_cheap|mid|deep`, y siguen
+la jerarquía de config habitual (override de CLI > local > global > default del paquete).
+La columna **Origen** distingue lo que elegiste vos de lo que trae el paquete.
+
+No hay lista blanca de modelos válidos: una lista blanca se queda vieja, que es
+exactamente el problema que esto resuelve. Un id inválido falla en la llamada con el
+error del proveedor.
+
+⚠️ **Cambiar un modelo invalida el caché de análisis** de los chunks analizados con el
+anterior, y eso es deliberado: la clave del caché incluye el modelo que realmente corrió,
+así que reutilizar esas respuestas sería atribuirle a un modelo lo que dijo otro. El
+próximo run los vuelve a consultar.
 
 **Rate limiting y budget.** Las llamadas se espacian con una ventana deslizante por modelo
 para no exceder el límite de tokens-por-minuto del tier de la cuenta (evita errores 429 y,

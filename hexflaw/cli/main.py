@@ -17,6 +17,7 @@ from hexflaw.cli.commands.graph import graph_command
 from hexflaw.cli.commands.ingest import ingest_command
 from hexflaw.cli.commands.init import init_command
 from hexflaw.cli.commands.languages import app as languages_app
+from hexflaw.cli.commands.models import app as models_app
 from hexflaw.cli.commands.poc import poc_command
 from hexflaw.cli.commands.report import report_command
 from hexflaw.cli.commands.run import run_command
@@ -47,6 +48,7 @@ app.command("tui")(tui_command)
 app.add_typer(languages_app, name="languages")
 app.add_typer(findings_app, name="findings")
 app.add_typer(agent_app, name="agent")
+app.add_typer(models_app, name="models")
 
 
 if __name__ == "__main__":

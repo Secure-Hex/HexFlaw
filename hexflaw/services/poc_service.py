@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.core.models import PoCConfidence, RootCause
 from hexflaw.infrastructure.logging import get_logger
 from hexflaw.services.llm_service import LLMService, LLMServiceError
@@ -100,7 +101,7 @@ def render_poc_llm(
     rc: RootCause,
     llm: LLMService,
     *,
-    model: str | None = None,
+    model: ModelTier | None = None,
     code_context: str = "",
 ) -> PoCFiles:
     """Genera el PoC con el LLM, adaptado al target, con barreras de seguridad.

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.core.models import IngestionResult
 from hexflaw.infrastructure import storage
 from hexflaw.infrastructure.logging import get_logger
@@ -72,7 +73,7 @@ def learn_sinks(
     llm: LLMService,
     language_service: LanguageService,
     *,
-    model: str | None = None,
+    model: ModelTier | None = None,
     persist: bool = True,
 ) -> list[str]:
     """Genera (y opcionalmente persiste) ``sink_patterns`` para un lenguaje vía LLM.
@@ -133,7 +134,7 @@ def auto_learn(
     language_service: LanguageService,
     hexflaw_dir: Path,
     *,
-    model: str | None = None,
+    model: ModelTier | None = None,
 ) -> dict[str, list[str]]:
     """Aprende sinks de los lenguajes del proyecto que no tienen cobertura curada.
 

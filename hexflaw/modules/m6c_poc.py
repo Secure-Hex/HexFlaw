@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.core.models import RootCause
 from hexflaw.infrastructure import storage
 from hexflaw.infrastructure.logging import get_logger
@@ -24,7 +25,7 @@ def generate_pocs(
     poc_dir: Path,
     *,
     llm: LLMService | None = None,
-    model: str | None = None,
+    model: ModelTier | None = None,
     code_by_finding: dict[str, str] | None = None,
 ) -> list[Path]:
     """Genera el directorio de PoC de cada hallazgo.

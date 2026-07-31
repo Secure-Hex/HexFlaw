@@ -8,6 +8,7 @@ import pytest
 
 from hexflaw.core import project as project_mod
 from hexflaw.infrastructure import config as config_mod
+from hexflaw.services.llm_service import build_llm_service
 
 
 def test_init_and_detect_from_subdir(tmp_path: Path) -> None:
@@ -58,4 +59,9 @@ def test_defaults_present_without_any_config(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setenv("HEXFLAW_HOME", str(tmp_path / "empty"))
     cfg = config_mod.resolve_config()
     assert cfg.get("embedding_backend") == "local-cpu"
-    assert cfg.get("model") == "claude-sonnet-4-6"
+    # Los modelos ya no viven en la config: son None por defecto y el backend usa
+    # su catálogo. Lo que importa es que ese catálogo resuelva los tres tiers.
+    assert cfg.get("anthropic_model_deep") is None
+    models = build_llm_service(cfg).models
+    assert {t.value for t in models} == {"cheap", "mid", "deep"}
+    assert all(models.values())

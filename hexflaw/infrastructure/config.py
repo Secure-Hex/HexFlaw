@@ -29,9 +29,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # de API; ver 'hexflaw agent'). Para "openai" se mapean los tiers
     # haiku/sonnet/opus a estos modelos (ajustables a tu catálogo de OpenAI):
     "llm_backend": "api",
-    "openai_model_cheap": "gpt-4o-mini",  # tier 'haiku' (screening/simple)
-    "openai_model_mid": "gpt-4o",  # tier 'sonnet' (análisis estándar)
-    "openai_model_deep": "gpt-4o",  # tier 'opus' (taint/razonamiento profundo)
+    # --- Modelos por tier -------------------------------------------------- #
+    # El pipeline no elige modelos: elige cuánta capacidad necesita cada tarea
+    # (cheap | mid | deep, ver core/model_policy.py) y el backend activo traduce ese
+    # tier con estas claves. Así estrenar un modelo nuevo es editar config, no código.
+    #
+    # Claves planas y no un dict anidado a propósito: la jerarquía de config mergea
+    # con dict.update() por capa, así que un {"models": {...}} local reemplazaría el
+    # global entero y cambiar un solo tier borraría los otros dos en silencio.
+    #
+    # No hay allowlist de modelos válidos: una lista blanca se queda vieja, que es
+    # exactamente el problema que estas claves resuelven. Un id inválido falla en la
+    # llamada con el error del proveedor.
+    # None => usar el catálogo por defecto del backend (ANTHROPIC_MODELS /
+    # OPENAI_MODELS en services/llm_service.py), igual que 'agent_queue_dir'. Los
+    # valores por defecto viven en UN solo lugar: repetirlos acá los dejaría
+    # divergir del código en la primera actualización que se haga a medias.
+    # 'hexflaw models list' muestra el mapa efectivo ya resuelto.
+    "anthropic_model_cheap": None,
+    "anthropic_model_mid": None,
+    "anthropic_model_deep": None,
+    "openai_model_cheap": None,
+    "openai_model_mid": None,
+    "openai_model_deep": None,
     # Backend "agent" (cola de archivos). queue_dir None => ~/.hexflaw/agent_queue.
     "agent_queue_dir": None,
     "agent_poll_timeout": 1800,  # s máximos esperando la respuesta del agente
@@ -43,7 +63,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "token_budget": 1_500_000,
     "max_file_bytes": 10 * 1024 * 1024,  # 10MB (CLAUDE.md §15, M1)
     "max_project_bytes": 2 * 1024 * 1024 * 1024,  # 2GB
-    "model": "claude-sonnet-4-6",
+    # DEPRECADA: era el modelo por defecto de Anthropic antes de que existieran los
+    # tiers. Se sigue honrando como 'anthropic_model_mid' si esa no está seteada
+    # (con warning), para no romperle la config a quien ya la tenía escrita.
+    "model": None,
     # Rate limiting interno (CLAUDE.md §16, §15 T-M4-2). El org real observado es
     # tier-1 = 50k input TPM por modelo (429 de Anthropic), así que 40k deja margen.
     # Subir solo si confirmás un tier mayor en console.anthropic.com/settings/limits.

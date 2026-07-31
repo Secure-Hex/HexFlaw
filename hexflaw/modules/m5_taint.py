@@ -25,6 +25,7 @@ import json
 from collections import deque
 from typing import Callable
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.core.models import (
     CodeGraph,
     EdgeType,
@@ -68,7 +69,7 @@ def confirm(
     ingestion: IngestionResult,
     llm: LLMService,
     *,
-    model: str | None = None,
+    model: ModelTier | None = None,
     on_status: "Callable[[str], None] | None" = None,
 ) -> FindingSet:
     """Confirma o descarta hallazgos preliminares vía taint tracing.
@@ -316,7 +317,7 @@ def _confirm_with_llm(
     graph: CodeGraph,
     code_by_id: dict[str, str],
     llm: LLMService,
-    model: str | None,
+    model: ModelTier | None,
     *,
     edge_index: dict[tuple[str, str], list[GraphEdge]] | None = None,
     is_data_flow: bool = False,

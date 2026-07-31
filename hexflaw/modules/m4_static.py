@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterator
 from typing import Any, Callable
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.core.models import (
     CodeChunk,
     CodeGraph,
@@ -155,7 +156,7 @@ def analyze(
     languages_service: LanguageService,
     *,
     mode: str = "balanced",
-    model: str | None = None,
+    model: ModelTier | None = None,
     embedding: EmbeddingService | None = None,
     cache: AnalysisCache | None = None,
     scope_query: str | None = None,
@@ -206,7 +207,13 @@ def analyze(
         :class:`FindingSet` con hallazgos preliminares (status=preliminary).
     """
     notify: Callable[[str], None] = on_status or (lambda _msg: None)
-    chosen_model = model or llm.default_model
+    chosen_tier = model or llm.default_tier
+    # La clave del caché usa el modelo REALMENTE resuelto, no el tier ni el nombre
+    # pedido. Con el tier, dos backends distintos compartirían clave y un análisis
+    # hecho por GPT se serviría después como si lo hubiera hecho Claude; y al cambiar
+    # el modelo de un tier, las respuestas del modelo viejo se reutilizarían para
+    # siempre. El caché depende del código Y de quién lo miró.
+    cache_model = llm.resolve_model(chosen_tier)
     # Modo exhaustive: se analiza TODO el codebase, sin filtro de sinks por keyword
     # (ni siquiera los chunks sin sink conocido se descartan) — máxima cobertura.
     if exhaustive:
@@ -279,7 +286,7 @@ def analyze(
     counter = 1
     to_analyze: list[CodeChunk] = []
     for chunk in relevant:
-        cached = _cache_get(cache, chunk, chosen_model, cache_profile)
+        cached = _cache_get(cache, chunk, cache_model, cache_profile)
         if cached is not None:
             for raw in cached:
                 findings.append(_to_finding(raw, counter, [chunk]))
@@ -301,7 +308,7 @@ def analyze(
             response = llm.analyze_code(
                 prompt,
                 code_blob,
-                model=chosen_model,
+                model=chosen_tier,
                 trace_label=f"M4 · análisis batch {batch_idx}/{total_batches}",
             )
         except BudgetExceededError as exc:
@@ -312,7 +319,7 @@ def analyze(
             continue
 
         raw_findings = _parse_findings(response.text)
-        _cache_store(cache, batch, raw_findings, chosen_model, cache_profile)
+        _cache_store(cache, batch, raw_findings, cache_model, cache_profile)
         for raw in raw_findings:
             findings.append(_to_finding(raw, counter, batch))
             counter += 1

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.infrastructure.config import resolve_config
 from hexflaw.services.llm_service import (
     AgentQueueLLMService,
@@ -35,7 +36,7 @@ def test_roundtrip_parks_request_and_consumes_response(tmp_path: Path) -> None:
         result["resp"] = svc.analyze_code(
             "Analyze. Output JSON only.",
             "system(cmd)",
-            model="claude-haiku-4-5",
+            model=ModelTier.CHEAP,
             trace_label="M4 batch 1/1",
         )
 
@@ -52,6 +53,9 @@ def test_roundtrip_parks_request_and_consumes_response(tmp_path: Path) -> None:
 
     data = json.loads(reqs[0].read_text())
     assert data["label"] == "M4 batch 1/1"
+    # El request nombra el modelo CONCRETO, no el tier: quien lo responde necesita
+    # saber qué capacidad se espera, y "cheap" no se lo dice.
+    assert data["model"] == "claude-haiku-4-5-20251001"
     assert "<CODE>" in data["prompt"]  # el código va aislado en delimitadores
     rid = data["id"]
     (tmp_path / f"res-{rid}.json").write_text(json.dumps({"id": rid, "text": "{\"findings\":[]}"}))
@@ -68,4 +72,4 @@ def test_roundtrip_parks_request_and_consumes_response(tmp_path: Path) -> None:
 def test_timeout_when_no_response(tmp_path: Path) -> None:
     svc = AgentQueueLLMService(queue_dir=str(tmp_path), poll_timeout=0.3, poll_interval=0.05)
     with pytest.raises(LLMServiceError, match="Timeout"):
-        svc.analyze_code("x", "y", model="claude-haiku-4-5")
+        svc.analyze_code("x", "y", model=ModelTier.CHEAP)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.core.models import (
     CodeChunk,
     CodeGraph,
@@ -67,8 +68,8 @@ def hunt_variants(
     languages: LanguageService,
     cache: AnalysisCache,
     *,
-    static_model: str | None = None,
-    taint_model: str | None = None,
+    static_model: ModelTier | None = None,
+    taint_model: ModelTier | None = None,
     mode: str = "balanced",
     top_k: int = 10,
     min_similarity: float = 0.78,

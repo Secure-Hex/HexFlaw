@@ -21,10 +21,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from hexflaw.core.model_policy import ModelTier
 from hexflaw.infrastructure.logging import get_logger
 from hexflaw.services.secret_scan import redact_secrets
 
 logger = get_logger(__name__)
+
+#: Catálogo por defecto de Anthropic. Son DEFAULTS, no constantes de negocio: la
+#: config los pisa (``anthropic_model_cheap|mid|deep``) para que salir un modelo
+#: nuevo no obligue a tocar código ni a esperar un release.
+ANTHROPIC_MODELS: dict[ModelTier, str] = {
+    ModelTier.CHEAP: "claude-haiku-4-5-20251001",
+    ModelTier.MID: "claude-sonnet-5",
+    ModelTier.DEEP: "claude-opus-5",
+}
+
+#: Catálogo por defecto de OpenAI (``openai_model_cheap|mid|deep``).
+OPENAI_MODELS: dict[ModelTier, str] = {
+    ModelTier.CHEAP: "gpt-4o-mini",
+    ModelTier.MID: "gpt-4o",
+    ModelTier.DEEP: "gpt-4o",
+}
 
 # Estimación grosera de tokens por carácter (≈4 chars/token) para el pacing previo.
 _CHARS_PER_TOKEN = 4
@@ -61,11 +78,16 @@ class LLMService:
 
     Attributes:
         api_key: API key de Anthropic. Si es ``None``, se intenta el entorno.
-        default_model: Modelo por defecto cuando una tarea no especifica uno.
+        models: Mapa ``tier -> modelo concreto`` de ESTE backend. Es lo que traduce
+            la decisión del pipeline ("necesito razonamiento profundo") al catálogo
+            del proveedor. Lo arma :func:`build_llm_service` desde la config, así
+            cambiar de modelo no requiere tocar código.
+        default_tier: Tier por defecto cuando una tarea no especifica uno.
     """
 
     api_key: str | None = None
-    default_model: str = "claude-sonnet-4-6"
+    models: dict[ModelTier, str] = field(default_factory=lambda: dict(ANTHROPIC_MODELS))
+    default_tier: ModelTier = ModelTier.MID
     token_budget: int | None = None
     rate_limit_tpm: int | None = None
     max_retries: int = 4
@@ -203,7 +225,7 @@ class LLMService:
         instruction: str,
         code: str,
         *,
-        model: str | None = None,
+        model: ModelTier | None = None,
         max_tokens: int = 2048,
         system: str = ANTI_INJECTION_SYSTEM,
         trace_label: str = "",
@@ -214,7 +236,7 @@ class LLMService:
         Args:
             instruction: Qué hacer con el código (la "pregunta" del módulo).
             code: Código analizado. Se inserta dentro de ``<CODE></CODE>``.
-            model: Modelo a usar; ``None`` usa :attr:`default_model`.
+            model: Tier a usar; ``None`` usa :attr:`default_tier`.
             max_tokens: Límite de tokens de salida.
             system: System prompt (default: instrucción anti-injection).
             redact: Si ``True`` (default), saca secretos del código ANTES de
@@ -230,7 +252,7 @@ class LLMService:
         Raises:
             LLMServiceError: Ante fallos de configuración o de la API.
         """
-        chosen = self._resolve_model(model or self.default_model)
+        chosen = self.resolve_model(model or self.default_tier)
         effective = self.effective_budget
         if effective is not None and self.total_tokens >= effective:
             reserve_note = (
@@ -298,13 +320,30 @@ class LLMService:
             text=text, model=chosen, input_tokens=in_tok, output_tokens=out_tok
         )
 
-    def _resolve_model(self, model: str) -> str:
-        """Resuelve el model id que el pipeline pide al modelo real del backend.
+    def resolve_model(self, tier: ModelTier) -> str:
+        """Traduce el tier que pide el pipeline al modelo concreto de este backend.
 
-        La base (Anthropic) usa el id tal cual. Backends con otro catálogo (p.ej.
-        OpenAI) lo sobreescriben para mapear los tiers ``haiku/sonnet/opus`` a sus
-        propios modelos, de modo que la auditoría refleje el modelo realmente usado.
+        Una sola implementación para todos los backends: lo único que cambia entre
+        ellos es el contenido de :attr:`models`. Antes cada backend deducía el tier
+        del nombre del modelo de Anthropic (``"opus" in model``), lo que ataba el
+        core al catálogo de un proveedor y se rompía en silencio con cualquier
+        modelo cuyo nombre no llevara la palabra esperada.
+
+        Args:
+            tier: Tier pedido por la política de modelos.
+
+        Returns:
+            El id de modelo configurado para ese tier.
+
+        Raises:
+            LLMServiceError: Si el backend no tiene modelo para ese tier.
         """
+        model = self.models.get(tier)
+        if not model:
+            raise LLMServiceError(
+                f"No hay modelo configurado para el tier '{tier.value}'. "
+                f"Definilo con 'hexflaw models set --{tier.value} <modelo>'."
+            )
         return model
 
     def _complete(
@@ -348,28 +387,11 @@ class OpenAILLMService(LLMService):
     """Backend LLM que usa la API de OpenAI (``chat.completions``).
 
     Tercera vía, independiente de Anthropic: útil cuando no hay créditos de
-    Anthropic pero sí de OpenAI. Mapea los tiers que pide el pipeline
-    (``haiku``/``sonnet``/``opus``) a modelos OpenAI configurables, conservando la
-    optimización de costo por tarea (CLAUDE.md §16, estrategia 5). Sobreescribe solo
-    el transporte y la resolución de modelo; budget/pacing/auditoría se heredan.
-
-    Attributes:
-        model_cheap: Modelo para screening/tareas simples (tier ``haiku``).
-        model_mid: Modelo para análisis estándar (tier ``sonnet``).
-        model_deep: Modelo para razonamiento profundo / taint (tier ``opus``).
+    Anthropic pero sí de OpenAI. Conserva la optimización de costo por tarea
+    (CLAUDE.md §16, estrategia 5) porque los tiers son el contrato: este backend
+    solo aporta OTRO :attr:`models`. Sobreescribe únicamente el transporte y el
+    cliente; resolución de tier, budget, pacing y auditoría se heredan.
     """
-
-    model_cheap: str = "gpt-4o-mini"
-    model_mid: str = "gpt-4o"
-    model_deep: str = "gpt-4o"
-
-    def _resolve_model(self, model: str) -> str:
-        m = model.lower()
-        if "haiku" in m:
-            return self.model_cheap
-        if "opus" in m:
-            return self.model_deep
-        return self.model_mid
 
     def _get_client(self) -> object:
         if self._client is not None:
@@ -391,7 +413,7 @@ class OpenAILLMService(LLMService):
     def _complete(
         self, system: str, user_content: str, model: str, max_tokens: int
     ) -> tuple[str, int, int]:
-        # `model` ya viene resuelto a un modelo OpenAI por `_resolve_model`.
+        # `model` ya viene resuelto a un modelo OpenAI por `resolve_model`.
         client = self._get_client()
         try:
             resp = client.chat.completions.create(  # type: ignore[attr-defined]
@@ -535,6 +557,43 @@ class AgentQueueLLMService(LLMService):
         return text, in_tok, out_tok
 
 
+def models_from_config(
+    config: object, prefix: str, fallback: dict[ModelTier, str]
+) -> dict[ModelTier, str]:
+    """Arma el mapa ``tier -> modelo`` de un backend leyendo la config.
+
+    Claves planas (``{prefix}_model_cheap|mid|deep``) y no un dict anidado, porque
+    la jerarquía de config mergea capa por capa con ``dict.update()``: un dict
+    anidado se reemplazaría entero, y sobreescribir un solo tier en el config local
+    borraría los otros dos sin decir nada.
+
+    Args:
+        config: Config efectiva.
+        prefix: Prefijo del backend (``anthropic`` | ``openai``).
+        fallback: Catálogo por defecto de ese backend.
+
+    Returns:
+        Mapa completo de tiers a modelos.
+    """
+    get = config.get  # type: ignore[attr-defined]
+    models = {
+        tier: str(get(f"{prefix}_model_{tier.value}") or fallback[tier])
+        for tier in ModelTier
+    }
+    # Retrocompat: 'model' era el modelo por defecto de Anthropic antes de que los
+    # tiers existieran. Se sigue honrando como el tier medio para no romperle la
+    # config a nadie, pero pierde contra la clave específica.
+    legacy = get("model")
+    if prefix == "anthropic" and legacy and not get("anthropic_model_mid"):
+        logger.warning(
+            "La clave de config 'model' está deprecada; usá 'anthropic_model_mid' "
+            "(o 'hexflaw models set --mid %s')",
+            legacy,
+        )
+        models[ModelTier.MID] = str(legacy)
+    return models
+
+
 def build_llm_service(config: object) -> LLMService:
     """Construye el ``LLMService`` según el backend configurado (``llm_backend``).
 
@@ -543,8 +602,8 @@ def build_llm_service(config: object) -> LLMService:
     razonamiento, ver :class:`AgentQueueLLMService` y ``hexflaw agent``).
     """
     backend = config.get("llm_backend", "api")  # type: ignore[attr-defined]
+    anthropic_models = models_from_config(config, "anthropic", ANTHROPIC_MODELS)
     common = dict(
-        default_model=config.get("model", "claude-sonnet-4-6"),  # type: ignore[attr-defined]
         token_budget=config.get("token_budget"),  # type: ignore[attr-defined]
         rate_limit_tpm=config.get("rate_limit_tokens_per_min"),  # type: ignore[attr-defined]
         max_retries=config.get("max_retries", 4),  # type: ignore[attr-defined]
@@ -556,7 +615,11 @@ def build_llm_service(config: object) -> LLMService:
             global_home() / "agent_queue"
         )
         logger.info("LLM backend: agent (cola de archivos en %s)", queue_dir)
+        # El agente hereda el catálogo de Anthropic: el request que se parkea en la
+        # cola dice "claude-opus-5" y no un "deep" opaco, así quien lo responde sabe
+        # qué capacidad se espera de él.
         return AgentQueueLLMService(
+            models=anthropic_models,
             queue_dir=queue_dir,
             poll_timeout=float(config.get("agent_poll_timeout", 1800)),  # type: ignore[attr-defined]
             poll_interval=float(config.get("agent_poll_interval", 1.0)),  # type: ignore[attr-defined]
@@ -566,9 +629,11 @@ def build_llm_service(config: object) -> LLMService:
         logger.info("LLM backend: openai")
         return OpenAILLMService(
             api_key=config.get("openai_api_key"),  # type: ignore[attr-defined]
-            model_cheap=config.get("openai_model_cheap", "gpt-4o-mini"),  # type: ignore[attr-defined]
-            model_mid=config.get("openai_model_mid", "gpt-4o"),  # type: ignore[attr-defined]
-            model_deep=config.get("openai_model_deep", "gpt-4o"),  # type: ignore[attr-defined]
+            models=models_from_config(config, "openai", OPENAI_MODELS),
             **common,
         )
-    return LLMService(api_key=config.get("anthropic_api_key"), **common)  # type: ignore[attr-defined]
+    return LLMService(
+        api_key=config.get("anthropic_api_key"),  # type: ignore[attr-defined]
+        models=anthropic_models,
+        **common,
+    )
