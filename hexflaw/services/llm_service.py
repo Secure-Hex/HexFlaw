@@ -618,12 +618,21 @@ def build_llm_service(config: object) -> LLMService:
         # El agente hereda el catálogo de Anthropic: el request que se parkea en la
         # cola dice "claude-opus-5" y no un "deep" opaco, así quien lo responde sabe
         # qué capacidad se espera de él.
+        #
+        # Y NO hereda el rate limiting: este backend no llama a ninguna API — escribe
+        # archivos en disco y los contesta un agente externo con su propia
+        # suscripción. El techo de tokens-por-minuto existe para no comerse un 429 de
+        # Anthropic, y acá no hay 429 posible: lo único que produce es sueño puro.
+        # Medido sobre un proyecto real (wallos, PHP): batches de ~21,5k tokens contra
+        # el techo de 40k/min hacían dormir ~35 s por batch mientras el agente
+        # respondía en 27 s — más tiempo esperando permiso que trabajando.
+        common_no_pacing = {**common, "rate_limit_tpm": None}
         return AgentQueueLLMService(
             models=anthropic_models,
             queue_dir=queue_dir,
             poll_timeout=float(config.get("agent_poll_timeout", 1800)),  # type: ignore[attr-defined]
             poll_interval=float(config.get("agent_poll_interval", 1.0)),  # type: ignore[attr-defined]
-            **common,
+            **common_no_pacing,
         )
     if backend == "openai":
         logger.info("LLM backend: openai")
